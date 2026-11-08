@@ -18,12 +18,15 @@ class ObserverServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, upstream_url):
+        if address[0] not in {"127.0.0.1", "localhost"}:
+            raise ValueError("The observer must bind to loopback")
         parsed = urlsplit(upstream_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or parsed.path not in {"", "/"}:
             raise ValueError("The first component must be an HTTP service on this workstation")
         self.upstream_host = parsed.hostname
         self.upstream_port = parsed.port or 80
         self.upstream_origin = f"http://{self.upstream_host}:{self.upstream_port}"
+        self.view_observation = None
         super().__init__(address, ObserverHandler)
 
 
@@ -62,23 +65,28 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
     def _observe_component(self):
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        discovery_state = "not_detected"
         try:
             connection = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port, timeout=3)
             connection.request("GET", "/")
             response = connection.getresponse()
             status = response.status
+            discovery_state = "detected" if "splunkd" in response.getheader("Server", "").lower() else "unverified"
             connection.close()
             availability = "available" if status < 500 else "unavailable"
         except (OSError, http.client.HTTPException):
             status = None
             availability = "unavailable"
         return {
-            "id": "mgmt",
-            "name": "Monitoring Console",
+            "id": f"splunk-web-{self.server.upstream_port}",
+            "name": f"Splunk web :{self.server.upstream_port}" if discovery_state == "detected" else f"Component :{self.server.upstream_port}",
+            "discovery_state": discovery_state,
             "availability": availability,
             "checked_at": checked_at,
             "source": f"{self.server.upstream_origin}/",
             "upstream_status": status,
+            "view_source": self.server.view_observation["source"] if self.server.view_observation else None,
+            "view_response_at": self.server.view_observation["at"] if self.server.view_observation else None,
         }
 
     def _proxy(self):
@@ -128,6 +136,11 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command != "HEAD":
                 shutil.copyfileobj(response, self.wfile, length=64 * 1024)
+            if self.command == "GET" and response.status < 400 and response.getheader("Content-Type", "").lower().startswith("text/html"):
+                self.server.view_observation = {
+                    "source": self.server.upstream_origin + urlsplit(self.path).path,
+                    "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
             self.close_connection = True
         except (OSError, http.client.HTTPException):
             if not response_started:

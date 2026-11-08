@@ -10,6 +10,8 @@ from observer.server import create_server
 
 
 class FakeSplunkHandler(BaseHTTPRequestHandler):
+    server_version = "Splunkd"
+
     def do_GET(self):
         if self.path == "/":
             self.send_response(303)
@@ -72,6 +74,8 @@ class FirstComponentViewTest(unittest.TestCase):
         self.assertEqual(status, 200)
         observation = json.loads(body)
         self.assertEqual(observation["availability"], "available")
+        self.assertEqual(observation["discovery_state"], "detected")
+        self.assertEqual(observation["name"], f"Splunk web :{self.splunk.server_port}")
         self.assertEqual(observation["source"], f"http://127.0.0.1:{self.splunk.server_port}/")
         self.assertIn("checked_at", observation)
 
@@ -79,6 +83,11 @@ class FirstComponentViewTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"Real lab component screen", body)
         self.assertEqual(headers["X-Frame-Options"], "SAMEORIGIN")
+
+        status, _headers, body = get(self.observer.server_port, "/observer/api/component")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["view_source"], f"http://127.0.0.1:{self.splunk.server_port}/en-US/")
+        self.assertIsNotNone(json.loads(body)["view_response_at"])
 
         status, headers, _body = get(self.observer.server_port, "/")
         self.assertEqual(status, 303)
@@ -117,6 +126,10 @@ class FirstComponentViewTest(unittest.TestCase):
         self.assertEqual(response.status, 403)
         response.read()
         connection.close()
+
+    def test_proxy_cannot_bind_beyond_loopback(self):
+        with self.assertRaises(ValueError):
+            create_server(("0.0.0.0", 0), f"http://127.0.0.1:{self.splunk.server_port}")
 
 
 if __name__ == "__main__":

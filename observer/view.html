@@ -28,12 +28,12 @@
 </head>
 <body>
   <header>
-    <div><h1>Splunk Lab Observer</h1><div class="subtitle">Monitoring Console · first component view</div></div>
+    <div><h1>Splunk Lab Observer</h1><div class="subtitle" id="component-name">Checking component…</div></div>
     <div class="actions"><span id="availability" role="status" aria-live="polite">Checking…</span><button id="reload" type="button">Reload view</button><a class="button" href="/en-US/" target="_blank" rel="noopener">Open full screen</a></div>
   </header>
   <main>
-    <div class="facts"><span id="source">Source: checking</span><span id="checked">Last checked: checking</span></div>
-    <div class="frame" id="frame"><iframe id="component-view" src="/en-US/" title="Monitoring Console live screen"></iframe><div id="unavailable">Component unavailable. Check that the Monitoring Console is running, then reload.</div></div>
+    <div class="facts"><span id="source">Source: checking</span><span id="checked">Health checked: checking</span><span id="view-time">View loaded: waiting</span></div>
+    <div class="frame" id="frame"><iframe id="component-view" src="/en-US/" title="Live Splunk component screen"></iframe><div id="unavailable">Component unavailable. Check that it is running, then reload.</div></div>
   </main>
   <script>
     const status = document.getElementById('availability');
@@ -47,8 +47,10 @@
         status.textContent = available ? 'Available' : 'Unavailable';
         status.className = component.availability;
         frame.classList.toggle('down', !available);
-        document.getElementById('source').textContent = 'Source: ' + component.source;
-        document.getElementById('checked').textContent = 'Last checked: ' + new Date(component.checked_at).toLocaleString();
+        document.getElementById('component-name').textContent = component.name;
+        document.getElementById('source').textContent = 'Source: ' + (component.view_source || component.source);
+        document.getElementById('checked').textContent = 'Health checked: ' + new Date(component.checked_at).toLocaleString();
+        document.getElementById('view-time').textContent = component.view_response_at ? 'View loaded: ' + new Date(component.view_response_at).toLocaleString() : 'View loaded: waiting';
       } catch (_error) {
         status.textContent = 'Observer unavailable';
         status.className = 'unavailable';
@@ -56,6 +58,7 @@
       }
     }
     document.getElementById('reload').addEventListener('click', () => { view.src = view.src; refresh(); });
+    view.addEventListener('load', refresh);
     refresh();
     setInterval(refresh, 15000);
   </script>
