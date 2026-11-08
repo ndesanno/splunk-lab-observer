@@ -29,7 +29,7 @@
 <body>
   <header>
     <div><h1>Splunk Lab Observer</h1><div class="subtitle" id="component-name">Checking component…</div></div>
-    <div class="actions"><span id="availability" role="status" aria-live="polite">Checking…</span><button id="reload" type="button">Reload view</button><a class="button" href="/en-US/" target="_blank" rel="noopener">Open full screen</a></div>
+    <div class="actions"><span id="availability" role="status" aria-live="polite">Checking…</span><button id="reload" type="button">Reload view</button><a class="button" href="/en-US/" target="_blank" rel="noopener">Open full screen</a><form id="logout" method="post" action="/observer/logout" hidden><button type="submit">Sign out</button></form></div>
   </header>
   <main>
     <div class="facts"><span id="source">Source: checking</span><span id="view-time">View URL checked: waiting</span><span id="loaded-time">Document loaded: waiting</span><span id="checked">Health checked: checking</span></div>
@@ -50,12 +50,14 @@
     async function refresh() {
       try {
         const response = await fetch('/observer/api/component', {cache: 'no-store'});
+        if (response.status === 401) { window.location.assign('/observer/login'); return; }
         const component = await response.json();
         const available = component.availability === 'available';
         status.textContent = available ? 'Available' : 'Unavailable';
         status.className = component.availability;
         frame.classList.toggle('down', !available);
         document.getElementById('component-name').textContent = component.name;
+        document.getElementById('logout').hidden = !component.login_required;
         componentSource = component.source;
         updateViewSource();
         document.getElementById('checked').textContent = 'Health checked: ' + new Date(component.checked_at).toLocaleString();

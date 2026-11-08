@@ -2,13 +2,14 @@
 
 ## Purpose
 
-Give the lab owner one local web interface for observing every deployed lab component, inspecting the screens and evidence directly, and asking an AI to explain, guide, test, diagnose, and eventually operate the lab.
+Give the lab owner one web interface running on the lab mini PC for observing every deployed lab component, inspecting the screens and evidence directly, and asking an AI to explain, guide, test, diagnose, and eventually operate the lab. The owner uses it from a Mac on the same local network.
 
 The owner must be able to verify an AI claim against a visible component view, search result, or log entry. AI summaries are useful navigation and interpretation, not the sole account of lab state.
 
 ## First milestone
 
 - Support Hindsight, Federation Pulse HQ, and Federation Pulse Spoke. Inventory their features and screens, and show which behaviors have been verified.
+- Serve the interface on one explicit HTTPS port on the mini PC's private LAN address, with an owner login before any lab view or API is available. Keep credentials and TLS keys outside the repository; retain loopback-only mode for local development.
 - Show a lab overview with discovered components, topology, health, recent changes and errors, active jobs, resource use, freshness, and history.
 - Provide a selectable wall of component views. Web components show their real interface; headless components show a live console and telemetry view. The owner can select and rearrange views, save a layout, expand one view, and navigate known app screens and workflows.
 - Keep selected views live. Other views may use visibly timestamped previews when necessary to keep the interface responsive. A synchronized timeline shows saved views and observations from a chosen moment.
@@ -20,7 +21,7 @@ The owner must be able to verify an AI claim against a visible component view, s
 
 ## Operation and control
 
-- Run locally for the owner first. Discover components and relationships automatically while allowing corrected names and descriptions; show provenance and last-check time.
+- Run on the mini PC for one owner, with access from the Mac on the same LAN. Discover components and relationships automatically while allowing corrected names and descriptions; show provenance and last-check time.
 - Collect lightweight health and change signals in the background. Run detailed checks on demand. Schedule safe, read-only smoke checks once repeatable.
 - Let the AI use an audited tool layer for browser actions, Splunk searches and APIs, and lab host commands. Use dedicated accounts with task-appropriate access and credentials outside the repository. Show the account used for each run.
 - Let the AI investigate freely. Before a state-changing test or operational action, show a specific plan, expected effects, and cleanup steps for approval. Record changes, attempt planned cleanup after failure, and show unresolved changes.
