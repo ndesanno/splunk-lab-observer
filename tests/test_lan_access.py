@@ -139,6 +139,9 @@ class LanAccessTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provision_lan_credentials(checkout / "secrets", "127.0.0.1")
             self.assertFalse((checkout / "secrets").exists())
+            with self.assertRaises(ValueError):
+                provision_lan_credentials(checkout / ".git" / "secrets", "127.0.0.1")
+            self.assertFalse((checkout / ".git" / "secrets").exists())
 
 
 if __name__ == "__main__":
