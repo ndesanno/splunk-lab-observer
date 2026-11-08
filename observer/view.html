@@ -39,8 +39,15 @@
     const status = document.getElementById('availability');
     const frame = document.getElementById('frame');
     const view = document.getElementById('component-view');
-    let viewPath = null;
     let viewLoadedAt = null;
+    let componentSource = null;
+    function currentViewSource(componentSource) {
+      try {
+        const location = new URL(view.contentWindow.location.href);
+        if (location.origin !== window.location.origin) return null;
+        return new URL(location.pathname + location.search + location.hash, componentSource).href;
+      } catch (_error) { return null; }
+    }
     async function refresh() {
       try {
         const response = await fetch('/observer/api/component', {cache: 'no-store'});
@@ -50,7 +57,8 @@
         status.className = component.availability;
         frame.classList.toggle('down', !available);
         document.getElementById('component-name').textContent = component.name;
-        document.getElementById('source').textContent = 'Source: ' + (viewPath ? new URL(viewPath, component.source).href : component.source);
+        componentSource = component.source;
+        updateViewSource();
         document.getElementById('checked').textContent = 'Health checked: ' + new Date(component.checked_at).toLocaleString();
         document.getElementById('view-time').textContent = viewLoadedAt ? 'View loaded: ' + viewLoadedAt.toLocaleString() : 'View loaded: waiting';
       } catch (_error) {
@@ -59,15 +67,17 @@
         frame.classList.add('down');
       }
     }
+    function updateViewSource() {
+      if (componentSource) document.getElementById('source').textContent = 'Source: ' + (currentViewSource(componentSource) || componentSource);
+    }
     document.getElementById('reload').addEventListener('click', () => { view.src = view.src; refresh(); });
     view.addEventListener('load', () => {
       viewLoadedAt = new Date();
-      try { viewPath = view.contentWindow.location.pathname; }
-      catch (_error) { viewPath = null; }
       refresh();
     });
     refresh();
     setInterval(refresh, 15000);
+    setInterval(updateViewSource, 1000);
   </script>
 </body>
 </html>
