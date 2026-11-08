@@ -32,14 +32,13 @@
     <div class="actions"><span id="availability" role="status" aria-live="polite">Checking…</span><button id="reload" type="button">Reload view</button><a class="button" href="/en-US/" target="_blank" rel="noopener">Open full screen</a></div>
   </header>
   <main>
-    <div class="facts"><span id="source">Source: checking</span><span id="checked">Health checked: checking</span><span id="view-time">View loaded: waiting</span></div>
+    <div class="facts"><span id="source">Source: checking</span><span id="view-time">View URL checked: waiting</span><span id="loaded-time">Document loaded: waiting</span><span id="checked">Health checked: checking</span></div>
     <div class="frame" id="frame"><iframe id="component-view" src="/en-US/" title="Live Splunk component screen"></iframe><div id="unavailable">Component unavailable. Check that it is running, then reload.</div></div>
   </main>
   <script>
     const status = document.getElementById('availability');
     const frame = document.getElementById('frame');
     const view = document.getElementById('component-view');
-    let viewLoadedAt = null;
     let componentSource = null;
     function currentViewSource(componentSource) {
       try {
@@ -60,7 +59,6 @@
         componentSource = component.source;
         updateViewSource();
         document.getElementById('checked').textContent = 'Health checked: ' + new Date(component.checked_at).toLocaleString();
-        document.getElementById('view-time').textContent = viewLoadedAt ? 'View loaded: ' + viewLoadedAt.toLocaleString() : 'View loaded: waiting';
       } catch (_error) {
         status.textContent = 'Observer unavailable';
         status.className = 'unavailable';
@@ -68,11 +66,15 @@
       }
     }
     function updateViewSource() {
-      if (componentSource) document.getElementById('source').textContent = 'Source: ' + (currentViewSource(componentSource) || componentSource);
+      if (!componentSource) return;
+      const source = currentViewSource(componentSource);
+      document.getElementById('source').textContent = 'Source: ' + (source || componentSource);
+      if (source) document.getElementById('view-time').textContent = 'View URL checked: ' + new Date().toLocaleString();
     }
     document.getElementById('reload').addEventListener('click', () => { view.src = view.src; refresh(); });
     view.addEventListener('load', () => {
-      viewLoadedAt = new Date();
+      const viewLoadedAt = new Date();
+      document.getElementById('loaded-time').textContent = 'Document loaded: ' + viewLoadedAt.toLocaleString();
       refresh();
     });
     refresh();
