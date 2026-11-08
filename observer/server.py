@@ -26,7 +26,6 @@ class ObserverServer(ThreadingHTTPServer):
         self.upstream_host = parsed.hostname
         self.upstream_port = parsed.port or 80
         self.upstream_origin = f"http://{self.upstream_host}:{self.upstream_port}"
-        self.view_observation = None
         super().__init__(address, ObserverHandler)
 
 
@@ -85,8 +84,6 @@ class ObserverHandler(BaseHTTPRequestHandler):
             "checked_at": checked_at,
             "source": f"{self.server.upstream_origin}/",
             "upstream_status": status,
-            "view_source": self.server.view_observation["source"] if self.server.view_observation else None,
-            "view_response_at": self.server.view_observation["at"] if self.server.view_observation else None,
         }
 
     def _proxy(self):
@@ -136,11 +133,6 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command != "HEAD":
                 shutil.copyfileobj(response, self.wfile, length=64 * 1024)
-            if self.command == "GET" and response.status < 400 and response.getheader("Content-Type", "").lower().startswith("text/html"):
-                self.server.view_observation = {
-                    "source": self.server.upstream_origin + urlsplit(self.path).path,
-                    "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                }
             self.close_connection = True
         except (OSError, http.client.HTTPException):
             if not response_started:

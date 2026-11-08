@@ -84,11 +84,6 @@ class FirstComponentViewTest(unittest.TestCase):
         self.assertIn(b"Real lab component screen", body)
         self.assertEqual(headers["X-Frame-Options"], "SAMEORIGIN")
 
-        status, _headers, body = get(self.observer.server_port, "/observer/api/component")
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["view_source"], f"http://127.0.0.1:{self.splunk.server_port}/en-US/")
-        self.assertIsNotNone(json.loads(body)["view_response_at"])
-
         status, headers, _body = get(self.observer.server_port, "/")
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], f"http://127.0.0.1:{self.observer.server_port}/en-US/")
