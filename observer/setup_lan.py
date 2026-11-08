@@ -30,7 +30,14 @@ def write_private_file(path, data):
 
 def provision_lan_credentials(config_dir, address):
     address = private_lan_address(address)
-    config_dir = Path(config_dir).expanduser()
+    config_dir = Path(config_dir).expanduser().resolve()
+    existing = next(parent for parent in (config_dir, *config_dir.parents) if parent.exists())
+    git_check = subprocess.run(
+        ["git", "-C", str(existing), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True, check=False,
+    )
+    if git_check.returncode == 0 and git_check.stdout.strip() == "true":
+        raise ValueError("Store LAN credentials outside a Git checkout")
     config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     if config_dir.stat().st_mode & 0o077:
         raise ValueError("The credential directory must be private to its owner")

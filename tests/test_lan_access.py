@@ -2,6 +2,7 @@
 
 import os
 import ssl
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -130,6 +131,14 @@ class LanAccessTest(unittest.TestCase):
         self.assertEqual(os.stat(self.credentials["keyfile"]).st_mode & 0o077, 0)
         self.assertEqual(os.stat(self.credentials["auth_file"]).st_mode & 0o077, 0)
         self.assertEqual(os.stat(self.credentials["password_file"]).st_mode & 0o077, 0)
+
+    def test_provisioning_refuses_a_git_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            with self.assertRaises(ValueError):
+                provision_lan_credentials(checkout / "secrets", "127.0.0.1")
+            self.assertFalse((checkout / "secrets").exists())
 
 
 if __name__ == "__main__":
