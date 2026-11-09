@@ -816,8 +816,8 @@
             h('button', {class: 'danger', type: 'button', onclick: () => decide(item.approval_id, 'deny', note.value)}, 'Decline'))]);
       }
       case 'summary': return h('div', {class: 'step'}, h('strong', {}, 'Changes made in this run'),
-        h('ul', {}, item.changes.map(change => h('li', {}, `${change.at}: podman ${change.action} ${change.component} (${change.before} → ${change.after}); cleanup: ${change.cleanup}`))),
-        item.unresolved.length ? h('div', {class: 'notice'}, 'Not yet restored: ', item.unresolved.join('; ')) : h('div', {class: 'muted'}, 'Nothing is left stopped.'));
+        h('ul', {}, item.changes.map(change => h('li', {}, `${change.at}: ${change.description}; cleanup: ${change.cleanup}`))),
+        item.unresolved.length ? h('div', {class: 'notice'}, 'Not yet restored: ', item.unresolved.join('; ')) : h('div', {class: 'muted'}, 'No container is left stopped. Check that each Splunk change’s cleanup was done if you wanted it undone.'));
       case 'error': return h('div', {class: 'step error'}, item.text);
       case 'note': return h('div', {class: 'muted'}, item.text);
       default: return null;
@@ -838,7 +838,7 @@
         h('button', {class: 'small', type: 'button', onclick: () => setAssistantOpen(false)}, 'Close')),
       runPicker,
       h('div', {class: 'muted', style: 'font-size:.75rem'},
-        status ? `Reads the lab as ${status.read_account || 'the observer account'}; container start, stop, and restart wait for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
+        status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
         run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
     const nearBottom = trail.scrollHeight - trail.scrollTop - trail.clientHeight < 80;
     const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(stepNode).filter(Boolean);

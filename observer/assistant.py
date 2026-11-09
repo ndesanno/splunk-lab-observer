@@ -42,6 +42,10 @@ REST_BLOCKED = re.compile(r"/search/jobs|/storage/passwords|/search/v2/jobs", re
 # A search must reduce events to aggregates so raw event text stays on this workstation.
 TRANSFORMING = re.compile(r"(^\s*\|\s*(tstats|mstats|rest|metadata|eventcount|dbinspect|inputlookup|mcatalog))|"
                           r"\|\s*(stats|tstats|chart|timechart|top|rare|eventcount|dbinspect|mstats|sistats|geostats)\b", re.I)
+# Changes never touch stored secrets or the accounts the observer and the owner sign in with.
+CHANGE_BLOCKED = re.compile(r"/storage/passwords|/authentication/users/(admin|lab_operator|lab_observer)\b|"
+                            r"/authorization/roles/(admin|lab_observer)\b|/server/control|/authentication/providers", re.I)
+SECRET_KEYS = re.compile(r"(?i)pass(word)?|secret|token|pass4symmkey|sslpassword")
 SECRET_TEXT = re.compile(r"(?i)(pass(word|wd)?|secret|token|api[_-]?key|pass4symmkey)(\"?\s*[:=]\s*)\S+")
 
 SYSTEM = """You are the lab assistant inside Splunk Lab Observer, a web interface the lab owner uses to watch every \
@@ -56,10 +60,13 @@ screens from list_screens.
 - Tie every claim about lab state to evidence from a tool result in this run: name the component, the source \
 (REST path, search, podman command or observation id) and the time it was checked. If no tool result supports a \
 claim, label it "Unverified:" and say what would verify it.
-- Changing the lab (container_action) needs the owner's approval for each call. Before asking, state the plan in \
+- Changing the lab (container_action, and splunk_change when it is available) needs the owner's approval for \
+each call. Before asking, state the plan in \
 the conversation; in the call give a specific reason, the expected effect, and the cleanup that restores the \
 previous state. If the owner declines, do not retry the same change; ask what they want instead. After an approved \
 change, check its effect with the read-only tools and show it.
+- Name any test objects you create with a test_fixture_ prefix so they are easy to find and remove, and clean \
+them up (with approval) when the test is done.
 - Searches must aggregate (stats, timechart, tstats, top and similar); raw events are not available to you.
 - Keep answers short and concrete. Use plain text with short lists; no tables wider than four columns."""
 
@@ -74,6 +81,16 @@ def _without_raw(value):
         return {key: _without_raw(item) for key, item in value.items() if not key.startswith("_raw")}
     if isinstance(value, list):
         return [_without_raw(item) for item in value]
+    return value
+
+
+def _without_secrets(value):
+    """Mask secret-looking values in a splunkd reply before it reaches the model."""
+    if isinstance(value, dict):
+        return {key: "[masked]" if SECRET_KEYS.search(key) and isinstance(item, str) and item else _without_secrets(item)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_without_secrets(item) for item in value]
     return value
 
 
@@ -197,18 +214,21 @@ class Run:
 
 
 class Assistant:
-    def __init__(self, lab, store, config_dir, monitor=None):
+    def __init__(self, lab, store, config_dir, monitor=None, operator=None):
         self.lab = lab
         self.store = store
         self.monitor = monitor
         self.key = ApiKey(config_dir)
+        self.operator = operator
         self.runs = {}  # live runs; finished runs are read back from the store
         self.lock = threading.Lock()
 
     def status(self):
         return {"sdk_available": anthropic is not None, "model": MODEL, "effort": EFFORT, **self.key.status(),
                 "read_account": getattr(self.lab.source, "username", None),
-                "change_tools": ["container_action (podman start, stop, restart), each approved by you"]}
+                "change_account": self.operator.username if self.operator else None,
+                "change_tools": ["container_action (podman start, stop, restart)"] +
+                                (["splunk_change (splunkd POST or DELETE as " + self.operator.username + ")"] if self.operator else [])}
 
     def get(self, run_id):
         with self.lock:
@@ -302,7 +322,7 @@ class Assistant:
         try:
             states = {item["name"]: item["state"] for item in self.lab.source.containers()}
             for change in run.record["changes"]:
-                if change["action"] == "stop" and states.get(change["component"]) != "running":
+                if change.get("action") == "stop" and states.get(change["component"]) != "running":
                     unresolved.append(f"{change['component']} is still stopped (cleanup: {change['cleanup']})")
         except Exception:  # the summary is best-effort; the trail already holds each change
             pass
@@ -536,7 +556,8 @@ class Assistant:
                 source.container_action(component, action)
                 after = {item["name"]: item["state"] for item in source.containers()}.get(component)
                 change = {"component": component, "action": action, "at": started, "before": before, "after": after,
-                          "cleanup": cleanup, "reason": reason}
+                          "cleanup": cleanup, "reason": reason,
+                          "description": f"podman {action} {component} ({before} → {after})"}
                 run.record["changes"].append(change)
                 store.record(component, "assistant_action", f"podman {action} (approved by the owner, run {run.id})", change)
                 if self.monitor:  # refresh the wall's status soon instead of at the next minute
@@ -545,5 +566,66 @@ class Assistant:
                         "note": "Splunk can take one to three minutes to serve requests after a start or restart."}
             return self._call(run, "container_action", arguments, f"podman {action} {component} (owner approval)", work)
 
-        return [lab_overview, component_status, list_screens, show_screen, splunk_rest_get, run_search,
-                container_logs, recorded_changes, container_action]
+        tools = [lab_overview, component_status, list_screens, show_screen, splunk_rest_get, run_search,
+                 container_logs, recorded_changes, container_action]
+        operator = self.operator
+        if operator is None:
+            return tools
+
+        @beta_tool
+        def splunk_change(component: str, method: Literal["POST", "DELETE"], path: str, params: dict[str, str],
+                          reason: str, expected_effect: str, cleanup: str) -> str:
+            """Change Splunk configuration or state through splunkd REST as the lab_operator account (admin role):
+            create or edit indexes, saved searches, apps, inputs, roles, cluster settings and similar. The owner must
+            approve each call; it waits until they decide. Explain the plan in the conversation first, and read the
+            current value with splunk_rest_get so the cleanup can restore it. Stored passwords, the admin and observer
+            accounts, and server restart are not available; restart a container with container_action instead.
+
+            Args:
+                component: Component id of a Splunk Enterprise instance. For a search head cluster, use one member.
+                method: POST to create or edit, DELETE to remove.
+                path: REST path starting with /services/ or /servicesNS/<user>/<app>/.
+                params: Form fields to send with a POST, e.g. {"name": "test_fixture_idx", "maxTotalDataSizeMB": "100"}.
+                    Empty for DELETE.
+                reason: Why this change is needed, in one or two sentences.
+                expected_effect: What the owner should see change.
+                cleanup: The exact change that restores the previous state (method, path and fields).
+            """
+            arguments = {"component": component, "method": method, "path": path, "params": params, "reason": reason,
+                         "expected_effect": expected_effect, "cleanup": cleanup}
+
+            def work():
+                found = self._component(component)
+                if found["kind"] != "splunk_enterprise":
+                    raise ValueError(f"{component} is not a Splunk Enterprise instance")
+                if not REST_PATH.match(path) or CHANGE_BLOCKED.search(path) or ".." in path:
+                    raise ValueError("Not an allowed change path (stored passwords, the admin and observer accounts, "
+                                     "authentication providers and server control are excluded)")
+                if not all(isinstance(key, str) and isinstance(value, str) for key, value in (params or {}).items()):
+                    raise ValueError("params must map field names to strings")
+                decision = run.ask_approval(f"{method} {path} on {component} as {operator.username}", arguments)
+                if decision["decision"] != "approved":
+                    reply = {"declined": "The owner declined this change.", "expired": "No decision within 15 minutes.",
+                             "stopped": "The owner stopped this run."}[decision["decision"]]
+                    raise ToolError(reply + (f" Owner's note: {decision['note']}" if decision.get("note") else ""))
+                started = utc_now()
+                status, reply = operator.request(component, method, path, params or {})
+                ok = 200 <= status < 300
+                change = {"component": component, "method": method, "path": path, "params": params, "at": started,
+                          "http_status": status, "cleanup": cleanup, "reason": reason, "succeeded": ok,
+                          "description": f"{method} {path} on {component}: HTTP {status}"}
+                if ok:
+                    run.record["changes"].append(change)
+                store.record(component, "assistant_action",
+                             f"splunkd {method} {path} as {operator.username} (approved by the owner, run {run.id})", change)
+                body = _without_secrets(_without_raw(reply))
+                messages = [item.get("text") for item in body.get("messages", []) if isinstance(item, dict)]
+                entries = [{"name": entry.get("name"), "content": entry.get("content")} for entry in body.get("entry", [])][:20]
+                if not ok:
+                    raise ToolError(f"splunkd answered HTTP {status}: {'; '.join(filter(None, messages)) or body}"[:2000])
+                return {"http_status": status, "messages": messages, "entries": entries}
+            run.uses(operator.username)
+            return self._call(run, "splunk_change", arguments,
+                              f"splunkd {method} {component}{path} as {operator.username} (owner approval)", work)
+
+        return tools + [splunk_change]

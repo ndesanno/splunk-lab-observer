@@ -144,6 +144,36 @@ class PodmanSplunkSource:
         return {item.get("name") or item.get("Name"): item for item in json.loads(result.stdout or "[]")}
 
 
+class OperatorAccount:
+    """The lab_operator account (admin role), used only for splunkd changes the owner approves."""
+
+    def __init__(self, config_file):
+        path = Path(config_file)
+        if path.stat().st_mode & 0o077:
+            raise ValueError("The Splunk operator credential file must be private to its owner")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        self.username = config["username"]
+        self._authorization = "Basic " + base64.b64encode(f"{config['username']}:{config['password']}".encode()).decode()
+        self.router = config.get("router", "http://127.0.0.1:8190").rstrip("/")
+
+    def request(self, component, method, path, params):
+        """POST or DELETE one splunkd endpoint; returns the HTTP status and the JSON reply."""
+        query = urllib.parse.urlencode({"output_mode": "json"})
+        data = urllib.parse.urlencode(params).encode() if method == "POST" else None
+        request = urllib.request.Request(f"{self.router}/mgmt/{component}{path}?{query}", data=data, method=method,
+                                         headers={"Authorization": self._authorization})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as error:
+            body = error.read()
+            try:
+                reply = json.loads(body or b"{}")
+            except ValueError:
+                reply = {"text": body.decode("utf-8", errors="replace")[:500]}
+            return error.code, reply
+
+
 def screens_from_nav(app):
     """Screens in an app's navigation menu, in menu order, with view labels from the view files."""
     base = f"/en-US/app/{app['app']}/"

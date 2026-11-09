@@ -47,8 +47,7 @@ class FakeMessagesApi(BaseHTTPRequestHandler):
         pass
 
 
-@unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")
-class AssistantRunTest(unittest.TestCase):
+class AssistantFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(self.temp.name)
@@ -84,6 +83,9 @@ class AssistantRunTest(unittest.TestCase):
     def finished(self, run):
         return run.record["status"] in {"done", "failed", "stopped"}
 
+
+@unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")
+class AssistantRunTest(AssistantFixture):
     def test_read_only_run_records_evidence_shows_screens_and_keeps_raw_events_local(self):
         self.api.script = [
             message([{"type": "text", "text": "Opening Hindsight."},
@@ -194,6 +196,62 @@ class AssistantRunTest(unittest.TestCase):
         messages = self.api.requests[1]["body"]["messages"]
         self.assertEqual([item["role"] for item in messages], ["user", "assistant", "user"])
         self.assertEqual(messages[-1]["content"], "Which manages which?")
+
+
+class FakeOperator:
+    username = "lab_operator"
+
+    def __init__(self):
+        self.requests = []
+
+    def request(self, component, method, path, params):
+        self.requests.append((component, method, path, params))
+        return 201, {"entry": [{"name": params.get("name"), "content": {"maxTotalDataSizeMB": "100", "pass4SymmKey": "s3cret"}}]}
+
+
+@unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")
+class SplunkChangeTest(AssistantFixture):
+    def setUp(self):
+        super().setUp()
+        self.operator = FakeOperator()
+        self.assistant.operator = self.operator
+
+    def test_an_approved_splunk_change_uses_the_operator_account_and_masks_secrets(self):
+        self.api.script = [
+            message([tool_use("t1", "splunk_change", {"component": "p-cm", "method": "POST", "path": "/services/storage/passwords",
+                                                      "params": {"name": "x"}, "reason": "r", "expected_effect": "e", "cleanup": "c"}),
+                     tool_use("t2", "splunk_change", {"component": "p-cm", "method": "POST", "path": "/services/data/indexes",
+                                                      "params": {"name": "test_fixture_idx", "maxTotalDataSizeMB": "100"},
+                                                      "reason": "Fixture for a retention test", "expected_effect": "New index",
+                                                      "cleanup": "DELETE /services/data/indexes/test_fixture_idx"})], "tool_use"),
+            message([{"type": "text", "text": "Created."}], "end_turn"),
+        ]
+        run = self.assistant.start("Create a small test index on p-cm")
+        self.wait(run, lambda item: item.record["status"] == "waiting_for_approval")
+        approvals = [item for item in run.record["events"] if item["type"] == "approval"]
+        self.assertEqual(len(approvals), 1)  # the blocked path never reached the owner
+        self.assertEqual(approvals[0]["action"], "POST /services/data/indexes on p-cm as lab_operator")
+        self.assertEqual(self.operator.requests, [])
+        run.decide(approvals[0]["approval_id"], "approve")
+        self.wait(run, self.finished)
+        self.assertEqual(self.operator.requests, [("p-cm", "POST", "/services/data/indexes",
+                                                   {"name": "test_fixture_idx", "maxTotalDataSizeMB": "100"})])
+        results = {item["tool_use_id"]: item for item in self.api.requests[1]["body"]["messages"][-1]["content"]}
+        self.assertTrue(results["t1"]["is_error"])
+        self.assertNotIn("s3cret", json.dumps(self.api.requests[1]["body"]))
+        self.assertIn("lab_operator", run.record["accounts"])
+        summary = next(item for item in run.record["events"] if item["type"] == "summary")
+        self.assertEqual(summary["changes"][0]["cleanup"], "DELETE /services/data/indexes/test_fixture_idx")
+        self.assertEqual(self.assistant.status()["change_account"], "lab_operator")
+
+    def test_without_an_operator_account_claude_has_no_splunk_change_tool(self):
+        self.assistant.operator = None
+        self.api.script = [message([{"type": "text", "text": "ok"}], "end_turn")]
+        run = self.assistant.start("hi")
+        self.wait(run, self.finished)
+        names = [tool["name"] for tool in self.api.requests[0]["body"]["tools"]]
+        self.assertNotIn("splunk_change", names)
+        self.assertIn("container_action", names)
 
 
 class AssistantApiTest(unittest.TestCase):

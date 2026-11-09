@@ -499,7 +499,7 @@ def create_server(address=("127.0.0.1", 8765), router_url="http://127.0.0.1:8190
 def main():
     from observer.assistant import Assistant
     from observer.capture import Capture
-    from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, PodmanSplunkSource
+    from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, OperatorAccount, PodmanSplunkSource
     from observer.monitor import Monitor
     from observer.store import DEFAULT_DATA_DIR, Store
 
@@ -519,7 +519,9 @@ def main():
     # Saved previews stay viewable with --no-capture; only new captures stop.
     capture = Capture(lab, store, args.data_dir)
     monitor = Monitor(lab, store, capture)
-    assistant = Assistant(lab, store, args.config_dir, monitor)
+    operator_file = args.config_dir / "operator.json"
+    operator = OperatorAccount(operator_file) if operator_file.exists() else None
+    assistant = Assistant(lab, store, args.config_dir, monitor, operator)
     options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant)
     if args.lan_address:
         address = private_lan_address(args.lan_address)
