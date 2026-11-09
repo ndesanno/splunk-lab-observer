@@ -80,6 +80,10 @@ checkpoint after each agreed step. Read the screen again after anything changes.
 page, ask the owner to sign in; never type passwords. Clicks that save, delete, enable or submit wait for approval. \
 To run a search in Splunk Web, open /en-US/app/search/search?q=<URL-encoded SPL>&earliest=-60m with show_screen \
 (the search bar is a code editor that typing cannot drive); raw events on screen are left out of read_screen.
+- Before testing an app, call coverage_map for it: it lists the app's screens and features from its source and \
+shows the installed version on each component next to the source version. Say if they differ. Pass the app ids to \
+propose_walkthrough so the owner sees the versions before agreeing. After a test, record_coverage for each item \
+and case it covered (normal, empty, incorrect, permission, error, recovery), with the supporting step numbers.
 - When the owner asks for a test or check, end with record_verdict (pass, fail or inconclusive) naming the step \
 numbers that support it, and save key screens with capture_evidence. Each tool result's step number is its seq.
 - Searches must aggregate (stats, timechart, tstats, top and similar); raw events are not available to you.
@@ -282,8 +286,9 @@ class Run:
 
 
 class Assistant:
-    def __init__(self, lab, store, config_dir, monitor=None, operator=None, capture=None):
+    def __init__(self, lab, store, config_dir, monitor=None, operator=None, capture=None, coverage=None):
         self.lab = lab
+        self.coverage = coverage
         self.store = store
         self.monitor = monitor
         self.capture = capture
@@ -483,6 +488,22 @@ class Assistant:
             message = f"Tool failed ({error.__class__.__name__}: {error})"[:500]
         run.update_event(item["seq"], status="error", result=message, seconds=round(time.time() - started, 2))
         raise ToolError(message)
+
+    def _coverage_source(self, app):
+        source = self.coverage.source_for(app) if self.coverage is not None else None
+        if source is None:
+            names = [item["app"] for item in self.coverage.sources()] if self.coverage is not None else []
+            raise ValueError(f"No source is configured for {app}. Configured: {', '.join(names) or 'none'}")
+        return source
+
+    def _versions(self, app):
+        """Installed version per component next to the source version, for an approval card or run record."""
+        try:
+            found = self.coverage.app_map(self._coverage_source(app))
+        except (OSError, RuntimeError, ValueError) as error:
+            return {"app": app, "error": str(error)[:200]}
+        return {"app": app, "label": found["label"], "source": found["source"], "source_reason": found["source_reason"],
+                "installed": found["installed"], "working_tree_changes": found["working_tree_changes"]}
 
     def _component(self, component, web=False):
         found = self.lab.component(component)
@@ -820,20 +841,25 @@ class Assistant:
                               f"owner's live view of {component}", work)
 
         @beta_tool
-        def propose_walkthrough(goal: str, steps: list[str]) -> str:
+        def propose_walkthrough(goal: str, steps: list[str], apps: list[str] | None = None) -> str:
             """Before guiding the owner through an app workflow in the shared view, propose the steps and wait for the
             owner to agree. Then do the steps in order and call checkpoint after each one.
 
             Args:
                 goal: What the walkthrough shows or tests, in one sentence.
                 steps: Short, ordered steps, e.g. ["Open Hindsight Vulnerability Overview", "Filter to critical hosts"].
+                apps: App ids under test, e.g. ["TA-hindsight"]; the owner sees their installed and source versions.
             """
-            arguments = {"goal": goal, "steps": steps}
+            arguments = {"goal": goal, "steps": steps, "apps": apps or []}
 
             def work():
                 if not steps or len(steps) > 30:
                     raise ValueError("Give between 1 and 30 steps")
-                decision = run.ask_approval(f"Walkthrough: {goal}", {"goal": goal, "steps": steps}, kind="plan")
+                details = {"goal": goal, "steps": steps}
+                if apps and self.coverage is not None:
+                    details["versions"] = [self._versions(app) for app in apps]
+                    run.record["versions"] = details["versions"]
+                decision = run.ask_approval(f"Walkthrough: {goal}", details, kind="plan")
                 run.record["walkthrough"] = {"goal": goal, "steps": steps, "agreed": decision["decision"] == "approved"}
                 if decision["decision"] != "approved":
                     raise ToolError("The owner did not start this walkthrough." +
@@ -914,9 +940,68 @@ class Assistant:
                 return {"recorded": verdict, "unknown_steps": missing}
             return self._call(run, "record_verdict", arguments, "run record", work)
 
+        @beta_tool
+        def coverage_map(app: str) -> str:
+            """An app's screens and features from its source (git, at the tag matching the installed version), the
+            installed version on each component next to the source version, and which cases of each item have been
+            tested. Call it before testing an app. Configured apps: see the error message if the id is unknown.
+
+            Args:
+                app: App id, e.g. TA-hindsight, federation_pulse_hq, federation_pulse_spoke.
+            """
+            def work():
+                source = self._coverage_source(app)
+                found = self.coverage.app_map(source)
+                compact = lambda mark: None if mark is None else \
+                    (mark["verdict"] if mark["status"] == "tested" else mark["status"])
+                return {key: found[key] for key in ("app", "label", "source", "source_reason", "installed",
+                                                    "working_tree_changes", "counts", "cases")} | {
+                    "default_branch": {key: found["default_branch"][key] for key in ("ref", "version", "build")},
+                    "items": [{"id": item["id"], "kind": item["kind"], "label": item["label"], "source": item["source"],
+                               "detail": item["detail"],
+                               "cases": {case: compact(mark) for case, mark in item["cases"].items() if mark}}
+                              for item in found["items"]]}
+            return self._call(run, "coverage_map", {"app": app}, "git show on the app source; installed_apps", work)
+
+        @beta_tool
+        def record_coverage(app: str, item: str, case: Literal["normal", "empty", "incorrect", "permission", "error", "recovery"],
+                            result: Literal["pass", "fail", "unverified", "n/a"], evidence_steps: list[int], note: str) -> str:
+            """Mark one case of one coverage_map item after testing it. pass or fail needs step numbers (seq) from
+            this run that show the result; without them it is stored as unverified. Use n/a when a case cannot apply.
+
+            Args:
+                app: App id.
+                item: Item id from coverage_map, e.g. screen:hindsight_overview.
+                case: normal, empty (no data), incorrect (bad input), permission (a role without access), error
+                    (a failing dependency), or recovery (back to normal after an error).
+                result: pass, fail, unverified or n/a.
+                evidence_steps: Step numbers that show the result.
+                note: One sentence on what was checked.
+            """
+            arguments = {"app": app, "item": item, "case": case, "result": result, "evidence_steps": evidence_steps,
+                         "note": note}
+
+            def work():
+                source = self._coverage_source(app)
+                if item not in {entry["id"] for entry in self.coverage.app_map(source)["items"]}:
+                    raise ValueError(f"{item} is not an item of {app}; use an id from coverage_map")
+                known = {entry["seq"] for entry in run.record["events"]}
+                steps = [seq for seq in evidence_steps if seq in known]
+                tested = result in {"pass", "fail"}
+                stored = self.coverage.record(app, item, case, "tested" if tested else result,
+                                              verdict=result if tested else None, run_id=run.id, evidence=steps,
+                                              note=note, by="assistant")
+                run.event("coverage", app=app, item=item, case=case, result=result if stored == "tested" else stored,
+                          evidence_steps=steps, note=note)
+                return {"stored": result if stored == "tested" else stored,
+                        "unknown_steps": [seq for seq in evidence_steps if seq not in known]}
+            return self._call(run, "record_coverage", arguments, "coverage map", work)
+
         tools = [lab_overview, component_status, list_screens, show_screen, splunk_rest_get, run_search,
                  container_logs, recorded_changes, container_action, read_screen, click, type_text, select_option,
                  propose_walkthrough, checkpoint, capture_evidence, record_verdict]
+        if self.coverage is not None:
+            tools += [coverage_map, record_coverage]
         operator = self.operator
         if operator is None:
             return tools

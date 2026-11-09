@@ -8,6 +8,8 @@ session, opens each screen in the focused view, and keeps the trail with the in-
     python -m observer.terminal show p-alpha-cm /en-US/manager/system/clustering
     python -m observer.terminal note "Peers are back; replication factor met."
     python -m observer.terminal did "podman restart p-alpha-idx1" --result "running after 95 s"
+    python -m observer.terminal coverage TA-hindsight screen:hindsight_overview normal pass --steps 3 4 \
+        --note "Overview lists the 8 forwarders with findings"
     python -m observer.terminal end "All three indexers restarted; cluster healthy."
 
 Commands never carry credentials; write only what the owner may see.
@@ -18,6 +20,7 @@ import sys
 from pathlib import Path
 
 from observer.assistant import Run
+from observer.coverage import CASES, Coverage
 from observer.store import DEFAULT_DATA_DIR, Store, utc_now
 
 CURRENT = "terminal-run"  # file in the data directory naming the open session
@@ -45,6 +48,14 @@ def main(argv=None):
     did.add_argument("action")
     did.add_argument("--result", default="")
     did.add_argument("--failed", action="store_true")
+    mark = commands.add_parser("coverage", help="mark a case of an app feature or screen (see the Coverage tab)")
+    mark.add_argument("app")
+    mark.add_argument("item", help="item id from the coverage map, e.g. screen:hindsight_overview")
+    mark.add_argument("case", choices=CASES)
+    mark.add_argument("result", choices=["pass", "fail", "unverified", "n/a"])
+    mark.add_argument("--steps", type=int, nargs="*", default=[], help="step numbers in this session that show it")
+    mark.add_argument("--note", default="")
+    mark.add_argument("--config-dir", type=Path, default=Path.home() / ".config" / "splunk-lab-observer")
     commands.add_parser("end", help="close the session").add_argument("summary", nargs="?", default="")
     args = parser.parse_args(argv)
 
@@ -78,6 +89,30 @@ def main(argv=None):
     elif args.command == "did":
         run.event("tool", name="Claude Code", input={"action": args.action}, source="terminal on the lab PC",
                   status="error" if args.failed else "ok", result=args.result or None)
+    elif args.command == "coverage":
+        from observer.lab import Lab, PodmanSplunkSource
+
+        lab = Lab(PodmanSplunkSource(), store)
+        lab.discover()  # the installed version picks the source ref the item ids come from
+        coverage = Coverage(store, lab, args.config_dir)
+        source = coverage.source_for(args.app)
+        if source is None:
+            print(f"No source is configured for {args.app!r}", file=sys.stderr)
+            return 1
+        if args.item not in {item["id"] for item in coverage.app_map(source)["items"]}:
+            print(f"{args.item!r} is not an item of {args.app}", file=sys.stderr)
+            return 1
+        known = {item["seq"] for item in run.record["events"]}
+        steps = [seq for seq in args.steps if seq in known]
+        tested = args.result in {"pass", "fail"}
+        stored = coverage.record(args.app, args.item, args.case, "tested" if tested else args.result,
+                                 verdict=args.result if tested else None, run_id=run.id, evidence=steps,
+                                 note=args.note, by="Claude Code (terminal)")
+        result = args.result if stored == "tested" else stored
+        run.event("coverage", app=args.app, item=args.item, case=args.case, result=result, evidence_steps=steps,
+                  note=args.note)
+        if result != args.result:
+            print(f"Stored as {result}: pass or fail needs --steps from this session", file=sys.stderr)
     elif args.command == "end":
         if args.summary:
             run.event("text", text=args.summary)

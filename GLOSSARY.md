@@ -39,3 +39,6 @@ The owner's decision on one state-changing step an AI asks to take, shown with i
 
 **Model-bound evidence**:
 The exact text a tool returned to the hosted AI model during a run, kept with the step so the owner can see everything that left the workstation.
+
+**Coverage mark**:
+The recorded status of one case (normal, empty, incorrect, permission, error, recovery) of one app feature or screen. It counts as tested only with a pass or fail verdict and the run steps that show it.

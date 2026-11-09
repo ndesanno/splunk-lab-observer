@@ -31,7 +31,7 @@ HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriz
 class ObserverServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None):
+    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None):
         secure_mode = any(item is not None for item in (auth_file, certfile, keyfile))
         if secure_mode and not all(item is not None for item in (auth_file, certfile, keyfile)):
             raise ValueError("LAN mode requires authentication, certificate, and private key files")
@@ -57,6 +57,7 @@ class ObserverServer(ThreadingHTTPServer):
         self.scheme = "https" if secure_mode else "http"
         self.allowed_hosts = {address[0]} if secure_mode else {"127.0.0.1", "localhost"}
         self.lab, self.store, self.capture, self.monitor, self.assistant = lab, store, capture, monitor, assistant
+        self.coverage = coverage
         super().__init__(address, ObserverHandler)
         if context is not None:
             self.socket = context.wrap_socket(self.socket, server_side=True)
@@ -203,6 +204,25 @@ class ObserverHandler(BaseHTTPRequestHandler):
             components = [item for item in body.get("components", []) if item in lab.web_components()] or None
             threading.Thread(target=self.server.capture.run, args=(components,), daemon=True).start()
             self._json(202, {"started": True})
+        elif parts == ["api", "coverage"] and get and self.server.coverage:
+            self._json(200, self.server.coverage.full_map())
+        elif parts == ["api", "coverage", "marks"] and post and self.server.coverage:
+            body = self._read_json()
+            if body is None:
+                return
+            coverage = self.server.coverage
+            source = coverage.source_for(body.get("app"))
+            if source is None:
+                self._json(404, {"error": "unknown_app"})
+                return
+            try:
+                status = coverage.record(source["app"], str(body.get("item") or ""), body.get("case"), body.get("status"),
+                                         verdict=body.get("verdict"), run_id=body.get("run_id"),
+                                         evidence=body.get("evidence"), note=body.get("note"), by="owner")
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(200, {"status": status})
         elif parts[:2] == ["api", "assistant"] and self.server.assistant:
             self._assistant_route(parts[2:], query, get, post)
         elif len(parts) == 3 and parts[0] == "captures" and get and self.server.capture:
@@ -540,14 +560,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
 
 def create_server(address=("127.0.0.1", 8765), router_url="http://127.0.0.1:8190", *, auth_file=None, certfile=None, keyfile=None,
-                  lab=None, store=None, capture=None, monitor=None, assistant=None):
+                  lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None):
     return ObserverServer(address, router_url, auth_file=auth_file, certfile=certfile, keyfile=keyfile,
-                          lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant)
+                          lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage)
 
 
 def main():
     from observer.assistant import Assistant
     from observer.capture import Capture
+    from observer.coverage import Coverage
     from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, OperatorAccount, PodmanSplunkSource
     from observer.monitor import Monitor
     from observer.store import DEFAULT_DATA_DIR, Store
@@ -570,8 +591,9 @@ def main():
     monitor = Monitor(lab, store, capture)
     operator_file = args.config_dir / "operator.json"
     operator = OperatorAccount(operator_file) if operator_file.exists() else None
-    assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture)
-    options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant)
+    coverage = Coverage(store, lab, args.config_dir)
+    assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture, coverage)
+    options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage)
     if args.lan_address:
         address = private_lan_address(args.lan_address)
         server = create_server(
