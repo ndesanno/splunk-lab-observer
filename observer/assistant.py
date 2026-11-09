@@ -141,7 +141,7 @@ class Run:
             self.record = record
         else:
             self.record = {"id": run_id or secrets.token_hex(6), "created_at": utc_now(), "title": prompt.strip()[:120],
-                           "status": "running", "model": MODEL, "events": [], "messages": [], "changes": [],
+                           "status": "running", "origin": "api", "model": MODEL, "events": [], "messages": [], "changes": [],
                            "accounts": []}
 
     @property
@@ -249,9 +249,14 @@ class Assistant:
             raise ValueError("Write a prompt of up to 8000 characters")
         with self.lock:
             if run_id:
-                run = self.runs.get(run_id) or self.get(run_id)
+                run = self.runs.get(run_id)
+                if run is None:  # finished before the observer last started
+                    record = self.store.run(run_id)
+                    run = Run(self.store, "", record=record) if record else None
                 if run is None:
                     raise KeyError(run_id)
+                if run.record.get("origin") == "terminal":
+                    raise RuntimeError("A Claude Code terminal session cannot be continued here; start a new conversation")
                 if run.record["status"] in {"running", "waiting_for_approval"}:
                     raise RuntimeError("This run is still working")
                 run.cancel.clear()

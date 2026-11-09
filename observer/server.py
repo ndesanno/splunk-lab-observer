@@ -217,6 +217,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
         assistant = self.server.assistant
         if parts == [] and get:
             self._json(200, {"status": assistant.status(), "runs": self.server.store.runs()})
+        elif parts == ["live"] and get:
+            self._json(200, {"latest": self.server.store.latest_run()})
         elif parts == ["key"] and post:
             body = self._read_json()
             if body is None:

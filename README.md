@@ -42,6 +42,8 @@ Open <http://127.0.0.1:8765/observer/>.
 
 - **Ask Claude:** a panel beside the wall where you ask about the lab or ask for something to be done. Claude investigates with read-only tools (lab registry, recorded history, splunkd REST and aggregate searches as `lab_observer`, container logs), opens the screens it is looking at in your focused view, and asks before any change. Each step shows the evidence sent to Claude. Container start, stop and restart, and Splunk changes through splunkd REST as `lab_operator` (when the lab's `./observer.sh operator` has created that account), each wait for your approval of the stated reason, effect and cleanup. Runs are kept for 30 days; pick an earlier one to continue it.
 
+- **Claude Code from the terminal:** when Claude Code works on the lab from a terminal conversation on the lab PC, it records its steps with `python -m observer.terminal` (`start`, `show <component> [path]`, `note`, `did`, `end`). An open observer page follows the live session: the panel opens, each step appears, and each screen it shows opens in your focused view. Terminal sessions are marked ⌨ in the conversation list.
+
 Background work: discovery every 5 minutes, health (container state, Splunk health, splunkd messages, web reachability, resource use) every minute, and previews of every Splunk Web every 10 minutes. Previews are taken by a headless browser container signed in as `lab_observer`; the first run builds `localhost/lab-observer-capture`. Observations are kept for 30 days and previews for 48 hours, under `~/.local/share/splunk-lab-observer/`. Use `--no-capture` to skip previews.
 
 ## Open it from a Mac on the same LAN

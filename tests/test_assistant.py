@@ -301,3 +301,67 @@ class AssistantApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerminalSessionTest(unittest.TestCase):
+    """Claude Code's terminal work appears as a run the page can follow."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(self.temp.name)
+        self.lab = Lab(FakeSource(), self.store)
+        self.lab.discover()
+        self.store.record("p-sh1", "container", "podman ps", {"state": "running"})
+        self.store.record("p-sh1", "web", "router", {"http_status": 200})
+        self.store.record("p-uf", "container", "podman ps", {"state": "running"})
+
+    def tearDown(self):
+        self.store.db.close()
+        self.temp.cleanup()
+
+    def terminal(self, *argv):
+        from observer.terminal import main
+        return main(["--data-dir", self.temp.name, *argv])
+
+    def test_a_session_records_screens_notes_and_actions(self):
+        self.assertEqual(self.terminal("note", "too early"), 1)
+        self.assertEqual(self.terminal("start", "Check the search heads"), 0)
+        latest = self.store.latest_run()
+        self.assertEqual((latest["status"], latest["origin"]), ("running", "terminal"))
+        self.assertEqual(self.terminal("show", "p-sh1", "/en-US/manager/system/clustering"), 0)
+        self.assertEqual(self.terminal("show", "p-uf"), 0)
+        self.assertEqual(self.terminal("show", "p-uf", "/en-US/app/search"), 1)  # no Splunk Web
+        self.assertEqual(self.terminal("show", "p-nope"), 1)
+        self.terminal("did", "podman restart p-sh2", "--result", "running")
+        self.terminal("note", "Captain is p-sh1.")
+        self.terminal("end", "Done.")
+        record = self.store.run(latest["id"])
+        self.assertEqual(record["status"], "done")
+        self.assertEqual([item["type"] for item in record["events"]], ["prompt", "display", "display", "tool", "text", "text"])
+        self.assertEqual(record["events"][1]["path"], "/en-US/manager/system/clustering")
+        self.assertEqual(record["events"][2]["path"], "")
+        self.assertEqual(record["events"][3]["input"], {"action": "podman restart p-sh2"})
+        self.assertEqual([item["rev"] for item in record["events"]], sorted({item["rev"] for item in record["events"]}))
+
+    def test_the_page_can_follow_it_but_not_continue_it_with_the_api(self):
+        self.terminal("start", "Live work")
+        router = start_router()
+        server = start(create_server(("127.0.0.1", 0), f"http://127.0.0.1:{router.server_port}", lab=self.lab, store=self.store,
+                                     assistant=Assistant(self.lab, self.store, self.temp.name)))
+        try:
+            status, body = call(server.server_port, "GET", "/observer/api/assistant/live")
+            self.assertEqual(body["latest"]["origin"], "terminal")
+            run_id = body["latest"]["id"]
+            self.terminal("show", "p-sh1")
+            status, body = call(server.server_port, "GET", f"/observer/api/assistant/runs/{run_id}?since=1")
+            self.assertEqual([item["type"] for item in body["events"]], ["display"])
+            self.assertEqual(body["origin"], "terminal")
+            self.terminal("end")
+            self.assistant_key(server)
+            status, body = call(server.server_port, "POST", f"/observer/api/assistant/runs/{run_id}/messages", {"prompt": "more"})
+            self.assertEqual(status, 400)
+        finally:
+            server.shutdown(); server.server_close(); router.shutdown(); router.server_close()
+
+    def assistant_key(self, server):
+        server.assistant.key.save(KEY)

@@ -663,7 +663,12 @@
   promptInput.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); sendPrompt(); } });
   assistantNode.append(assistantHead, trail, composer);
   document.body.append(assistantNode);
-  const activeRun = () => assistant.run && ['running', 'waiting_for_approval'].includes(assistant.run.status);
+  // A live run is still adding steps; only an in-page run occupies the prompt (a terminal session runs beside it).
+  const liveRun = () => assistant.run && ['running', 'waiting_for_approval'].includes(assistant.run.status);
+  const terminalRun = () => assistant.run && assistant.run.origin === 'terminal';
+  const activeRun = () => liveRun() && !terminalRun();
+  const pageOpenedAt = Date.now();
+  const followed = new Set();
 
   function setAssistantOpen(open) {
     assistant.open = open;
@@ -684,12 +689,26 @@
     } catch (error) { assistant.error = error.message; }
     renderAssistant();
   }
-  async function selectRun(id) {
+  async function selectRun(id, follow) {
     clearTimeout(assistant.timer);
     assistant.run = null; assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set();
-    if (id) await fetchRun(id, true);
+    if (id) await fetchRun(id, !follow);
     renderAssistant();
   }
+  // Follow a run started elsewhere (Claude Code in the terminal, or another browser) while it is live.
+  async function followLive() {
+    try {
+      const {latest} = await api('/observer/api/assistant/live');
+      if (!latest || latest.status !== 'running' || followed.has(latest.id) || activeRun()) return;
+      if (assistant.run && assistant.run.id === latest.id) return;
+      if (Date.parse(latest.updated_at) < pageOpenedAt - 60000) return;
+      followed.add(latest.id);
+      if (!assistant.open) setAssistantOpen(true);
+      await selectRun(latest.id, true);
+      loadAssistantRuns();
+    } catch (_error) { /* next poll */ }
+  }
+  setInterval(followLive, 2500);
   async function fetchRun(id, initial) {
     clearTimeout(assistant.timer);
     let result;
@@ -709,10 +728,10 @@
       }
       if (item.type === 'approval' && item.decision === 'pending' && !assistant.open) setAssistantOpen(true);
     }
-    const wasActive = activeRun();
+    const wasActive = liveRun();
     assistant.run = Object.assign({}, result, {events: undefined});
     renderAssistant();
-    if (activeRun()) assistant.timer = setTimeout(() => fetchRun(id), 1000);
+    if (liveRun()) assistant.timer = setTimeout(() => fetchRun(id), 1000);
     else if (wasActive) { refresh(); loadAssistant(); }
   }
   function showScreen(component, path) {
@@ -732,12 +751,12 @@
     if (!text || assistant.busy) return;
     assistant.busy = true; assistant.error = null; renderAssistant();
     try {
-      const continuing = assistant.run && !activeRun();
+      const continuing = assistant.run && !activeRun() && !terminalRun();
       const result = continuing
         ? await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/messages`, {prompt: text})
         : await postWithReason('/observer/api/assistant/runs', {prompt: text});
       promptInput.value = '';
-      if (!continuing) { assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set(); }
+      if (!continuing) { assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set(); followed.add(result.id); }
       assistant.run = Object.assign({}, result, {events: undefined});
       await fetchRun(result.id);
       loadAssistantRuns();
@@ -791,7 +810,7 @@
             item.seconds !== undefined ? h('span', {class: 'muted', style: 'font-size:.72rem'}, `${item.seconds}s`) : null),
           toolSummary(item) ? h('div', {class: 'muted', style: 'overflow-wrap:anywhere'}, toolSummary(item)) : null,
           h('div', {class: 'fact-source'}, item.source),
-          item.result !== undefined ? h('details', {}, h('summary', {}, item.status === 'error' ? 'Error sent to Claude' : 'Evidence sent to Claude'), h('pre', {}, item.result)) : null);
+          item.result !== undefined && item.result !== null ? h('details', {}, h('summary', {}, item.name === 'Claude Code' ? 'Result' : item.status === 'error' ? 'Error sent to Claude' : 'Evidence sent to Claude'), h('pre', {}, item.result)) : null);
       }
       case 'display': {
         const component = byId(item.component);
@@ -831,18 +850,18 @@
     const tokens = usage.reduce((sum, item) => [sum[0] + (item.input_tokens || 0), sum[1] + (item.output_tokens || 0)], [0, 0]);
     const runPicker = h('select', {'aria-label': 'Conversation', onchange: event => selectRun(event.target.value || null)},
       h('option', {value: '', selected: !run}, 'New conversation'),
-      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
+      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${item.origin === 'terminal' ? '⌨ ' : ''}${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
     assistantHead.replaceChildren(
       h('div', {class: 'row'}, h('strong', {style: 'flex:1'}, 'Claude'),
         status ? h('span', {class: 'muted', style: 'font-size:.75rem'}, `${status.model} · effort ${status.effort}`) : null,
         h('button', {class: 'small', type: 'button', onclick: () => setAssistantOpen(false)}, 'Close')),
       runPicker,
       h('div', {class: 'muted', style: 'font-size:.75rem'},
-        status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
+        terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC, with its own access; you approve its actions there. This page follows a live session and opens each screen it shows.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
         run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
     const nearBottom = trail.scrollHeight - trail.scrollTop - trail.clientHeight < 80;
     const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(stepNode).filter(Boolean);
-    if (activeRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, 'Claude is working…'));
+    if (liveRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, terminalRun() ? 'Claude Code is working in the terminal…' : 'Claude is working…'));
     if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is p-hq-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
     trail.replaceChildren(...steps);
     if (nearBottom) trail.scrollTop = trail.scrollHeight;
@@ -855,7 +874,7 @@
         keyInput, h('div', {class: 'row', style: 'margin-top:.4rem'}, h('button', {class: 'primary', type: 'button', onclick: () => saveKey(keyInput.value)}, 'Save key'))));
     } else if (status) {
       parts.push(promptInput, h('div', {class: 'row'},
-        h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() ? 'Send follow-up' : 'Send'),
+        h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() && !terminalRun() ? 'Send follow-up' : 'Send'),
         activeRun() ? h('button', {class: 'danger', type: 'button', onclick: async () => { await post(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/stop`); fetchRun(run.id); }}, 'Stop') : null,
         h('span', {class: 'muted', style: 'font-size:.75rem;flex:1'}, '⌘/Ctrl + Enter to send'),
         h('button', {class: 'small', type: 'button', title: `Key ${status.hint || ''} from ${status.source || ''}`, onclick: () => { if (confirm('Remove the saved Anthropic API key from the lab PC?')) saveKey(''); }}, 'Remove key')));

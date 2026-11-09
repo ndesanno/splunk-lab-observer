@@ -141,9 +141,17 @@ class Store:
             row = self.db.execute("SELECT record FROM runs WHERE id = ?", (run_id,)).fetchone()
         return json.loads(row["record"]) if row else None
 
+    def latest_run(self):
+        """The most recently updated run, so an open page can follow one started elsewhere."""
+        with self.lock:
+            row = self.db.execute("SELECT id, status, updated_at, json_extract(record, '$.origin') AS origin FROM runs"
+                                  " ORDER BY updated_at DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
     def runs(self, limit=30):
         with self.lock:
-            rows = self.db.execute("SELECT id, created_at, updated_at, status, title FROM runs ORDER BY epoch DESC LIMIT ?",
+            rows = self.db.execute("SELECT id, created_at, updated_at, status, title, json_extract(record, '$.origin') AS origin"
+                                   " FROM runs ORDER BY epoch DESC LIMIT ?",
                                    (limit,)).fetchall()
         return [dict(row) for row in rows]
 
