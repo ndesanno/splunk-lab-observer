@@ -41,8 +41,9 @@
     .tile { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
     .tile.dragging { opacity: .4; }
     .tile.drop-target { outline: 2px dashed #8fb8e6; }
-    .tile-head { display: flex; align-items: center; gap: .4rem; padding: .35rem .5rem; border-bottom: 1px solid var(--line); cursor: grab; min-width: 0; }
-    .tile-head .name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+    .tile-head { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .4rem; padding: .35rem .5rem; border-bottom: 1px solid var(--line); cursor: grab; min-width: 0; }
+    .tile-head .name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 0 100%; min-width: 0; }
+    .tile-head .spacer { flex: 1; }
     .tile-body { position: relative; aspect-ratio: 16 / 10; overflow: hidden; background: #f8f9fb; border-radius: 0 0 .5rem .5rem; }
     .tile-body iframe { position: absolute; top: 0; left: 0; border: 0; background: white; transform-origin: 0 0; }
     .tile-body img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
@@ -174,10 +175,13 @@
       document.getElementById('summary').textContent = `Observer unavailable: ${error.message}`;
     }
   }
+  // Every Splunk Web, as previews (cheap images) with the first one live, grouped by cluster.
+  function allWebTiles() {
+    const ordered = groupsForPicker().flatMap(([, members]) => members).filter(id => isWeb(byId(id)));
+    return [...new Set(ordered)].map((id, index) => ({id, live: index === 0}));
+  }
   function defaultLayout() {
-    const preferred = ['p-hq-sh1', 'p-alpha-sh1', 'p-bravo', 'p-mgmt', 'p-hq-cm', 'p-alpha-cm'];
-    const ids = preferred.filter(byId).concat(lab.components.filter(isWeb).map(item => item.id).filter(id => !preferred.includes(id))).slice(0, 6);
-    layout = {tiles: ids.map((id, index) => ({id, live: index === 0})), columns: 3};
+    layout = {tiles: allWebTiles(), columns: 4};
   }
   async function loadLayout() {
     try {
@@ -221,6 +225,11 @@
       h('label', {class: 'row muted'}, 'Columns',
         h('select', {onchange: event => { layout.columns = Number(event.target.value); render(); }},
           [1, 2, 3, 4].map(n => h('option', {value: n, selected: layout.columns === n}, n)))),
+      h('button', {type: 'button', title: 'Show every Splunk Web as a preview', onclick: () => {
+        const live = new Set(layout.tiles.filter(tile => tile.live).map(tile => tile.id));
+        const tiles = allWebTiles().map(tile => ({id: tile.id, live: live.has(tile.id)}));
+        const extra = layout.tiles.filter(tile => !tiles.some(item => item.id === tile.id));
+        layout.tiles = tiles.concat(extra); render(); }}, `Show all Splunk screens (${lab.components.filter(isWeb).length})`),
       h('button', {type: 'button', onclick: saveLayout}, layoutDirty() ? 'Save layout' : 'Layout saved'),
       savedLayout ? h('button', {type: 'button', onclick: async () => { await loadLayout(); render(); }, disabled: !layoutDirty()}, 'Restore saved') : null,
       h('span', {class: 'muted'}, savedLayout ? ['Saved ', stamp(savedLayout.saved_at)] : 'Not saved yet'),
@@ -294,7 +303,7 @@
 
   function updateTile(entry, component, tile, index) {
     const head = h('div', {class: 'tile-head'},
-      h('span', {class: 'name', title: component.id}, displayName(component)), stateBadge(component),
+      h('span', {class: 'name', title: component.id}, displayName(component)), stateBadge(component), h('span', {class: 'spacer'}),
       isWeb(component) ? h('button', {class: 'small', type: 'button', 'aria-pressed': String(tile.live), title: 'Live view or timestamped preview',
         onclick: () => { tile.live = !tile.live; render(); }}, tile.live ? 'Live' : 'Preview') : null,
       h('button', {class: 'small', type: 'button', title: 'Focus this view', onclick: () => { focused = component.id; render(); }}, '⤢'),

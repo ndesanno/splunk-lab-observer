@@ -405,7 +405,8 @@ def main():
     store = Store(args.data_dir)
     source = PodmanSplunkSource(args.splunk_config)
     lab = Lab(source, store)
-    capture = None if args.no_capture else Capture(lab, store, args.data_dir)
+    # Saved previews stay viewable with --no-capture; only new captures stop.
+    capture = Capture(lab, store, args.data_dir)
     monitor = Monitor(lab, store, capture)
     options = dict(lab=lab, store=store, capture=capture, monitor=monitor)
     if args.lan_address:
@@ -421,7 +422,7 @@ def main():
         address = "127.0.0.1"
         server = create_server((address, args.port), source.router, **options)
     monitor.start()
-    if capture:
+    if not args.no_capture:
         capture.start()
     print(f"Observer: {server.scheme}://{address}:{server.server_port}/observer/", flush=True)
     try:
@@ -430,8 +431,7 @@ def main():
         pass
     finally:
         monitor.stop()
-        if capture:
-            capture.stop()
+        capture.stop()
         server.server_close()
 
 
