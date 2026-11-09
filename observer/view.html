@@ -52,6 +52,17 @@
     .console { position: absolute; inset: 0; background: #070c16; color: #cfe3ff; font: .72rem/1.35 ui-monospace, monospace; padding: .5rem; overflow: auto; white-space: pre-wrap; }
     .focus { position: fixed; inset: 0; z-index: 20; background: rgba(5, 9, 18, .92); display: flex; flex-direction: column; padding: 1rem; gap: .5rem; }
     .focus .tile-body { flex: 1; aspect-ratio: auto; border: 1px solid var(--line); border-radius: .5rem; }
+    .focus-main { flex: 1; min-height: 0; display: flex; gap: .6rem; }
+    .screens { width: 17rem; flex: none; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; padding: .5rem; }
+    .screens input { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .35rem; margin-bottom: .4rem; }
+    .screens h4 { margin: .6rem 0 .2rem; font-size: .78rem; color: var(--muted); font-weight: 600; }
+    .screens button.screen { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-radius: .3rem; padding: .2rem .4rem; font-size: .85rem; }
+    .screens button.screen:hover { background: #1b2c45; }
+    .screens button.screen[aria-current="true"] { background: #2f5d8f; }
+    .timebar input[type=range] { flex: 1; min-width: 12rem; }
+    .timebar input[type=datetime-local] { background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .25rem; }
+    .history-note { border: 1px solid #3d5f8a; background: #10213a; border-radius: .4rem; padding: .5rem .7rem; font-size: .85rem; margin-bottom: .7rem; }
+    .history-note details { margin-top: .4rem; }
     /* overview */
     .groups { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); }
     .card { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); padding: .7rem .8rem; }
@@ -96,6 +107,7 @@
   let pickerOpen = false;
   let focused = null;
   let drawer = null;
+  let history = null;  // {time, data}: the wall replays recorded state at one moment
 
   function h(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -137,6 +149,7 @@
   function stateBadge(component) {
     const status = component.status || {};
     const container = status.container && status.container.value;
+    if (component.historical && !container) return h('span', {class: 'badge', title: 'Nothing recorded at or before this time'}, 'no record');
     const state = container ? container.state : (component.facts.container_state || {}).value;
     if (state !== 'running') return h('span', {class: 'badge bad', title: 'Container state from podman ps'}, state || 'unknown');
     const health = status.splunk_health && status.splunk_health.value.health;
@@ -234,7 +247,16 @@
       savedLayout ? h('button', {type: 'button', onclick: async () => { await loadLayout(); render(); }, disabled: !layoutDirty()}, 'Restore saved') : null,
       h('span', {class: 'muted'}, savedLayout ? ['Saved ', stamp(savedLayout.saved_at)] : 'Not saved yet'),
     ));
-    if (live > MAX_LIVE) wrapper.append(h('div', {class: 'notice'}, `${live} live views are open. Each is a full Splunk page in your browser; more than ${MAX_LIVE} may slow it down. Switch some to previews.`));
+    wrapper.append(renderTimebar());
+    if (history) {
+      const changes = history.data.changes;
+      wrapper.append(h('div', {class: 'history-note'},
+        h('strong', {}, `Showing the lab as recorded at ${new Date(history.time).toLocaleString()}. `),
+        'Live views are paused; each tile shows its newest preview at or before that moment and how far before it was taken. ',
+        `A preview more than ${Math.round(history.data.missing_capture_after_seconds / 60)} minutes old, or whose file has expired, is marked missing.`,
+        h('details', {}, h('summary', {}, `${changes.length} change(s) within 30 minutes of this time`), changesTable(changes, true))));
+    }
+    if (live > MAX_LIVE && !history) wrapper.append(h('div', {class: 'notice'}, `${live} live views are open. Each is a full Splunk page in your browser; more than ${MAX_LIVE} may slow it down. Switch some to previews.`));
     if (pickerOpen) wrapper.append(renderPicker());
     if (!layout.tiles.length) wrapper.append(h('p', {class: 'muted'}, 'No views selected. Use “Choose views” to add components.'));
     wallTop.replaceChildren(wrapper);
@@ -244,7 +266,8 @@
       const component = byId(tile.id);
       if (!component) return;
       wanted.add(tile.id);
-      const live = tile.live && focused !== tile.id && isWeb(component);
+      const view = history ? historical(component) : component;
+      const live = !history && tile.live && focused !== tile.id && isWeb(component);
       let entry = tileNodes.get(tile.id);
       if (entry && entry.live !== live) { entry.node.remove(); entry = null; }
       if (!entry) {
@@ -254,9 +277,42 @@
         grid.append(entry.node);
       }
       entry.node.style.order = index;
-      updateTile(entry, component, tile, index);
+      updateTile(entry, view, tile, index);
     });
     for (const [id, entry] of tileNodes) if (!wanted.has(id)) { entry.node.remove(); tileNodes.delete(id); }
+  }
+
+  function historical(component) {
+    return Object.assign({}, component, {historical: true, status: history.data.components[component.id] || {}});
+  }
+  function localInput(date) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  async function setHistory(date) {
+    if (!date) { history = null; render(); return; }
+    const now = Date.now();
+    const clamped = new Date(Math.min(date.getTime(), now));
+    const data = await api(`/observer/api/at?time=${encodeURIComponent(clamped.toISOString())}`);
+    history = {time: data.time, data};
+    focused = null;
+    render();
+  }
+  function renderTimebar() {
+    const start = lab.history_from ? Date.parse(lab.history_from) : Date.now() - 3600000;
+    const end = Date.now();
+    const current = history ? Date.parse(history.time) : end;
+    const step = minutes => setHistory(new Date(current + minutes * 60000));
+    return h('div', {class: 'toolbar timebar'},
+      h('span', {class: 'muted'}, 'Time'),
+      h('button', {type: 'button', 'aria-pressed': String(!history), onclick: () => setHistory(null)}, 'Now (live)'),
+      h('button', {type: 'button', title: '10 minutes earlier', onclick: () => step(-10)}, '−10 min'),
+      h('input', {type: 'range', min: start, max: end, step: 60000, value: current, 'aria-label': 'Time to show',
+        onchange: event => setHistory(new Date(Number(event.target.value)))}),
+      h('button', {type: 'button', title: '10 minutes later', disabled: !history, onclick: () => step(10)}, '+10 min'),
+      h('input', {type: 'datetime-local', value: localInput(new Date(current)), 'aria-label': 'Time to show',
+        onchange: event => event.target.value && setHistory(new Date(event.target.value))}),
+      h('span', {class: 'muted'}, `Recorded since ${new Date(start).toLocaleString()}`));
   }
 
   function groupsForPicker() {
@@ -304,9 +360,10 @@
   function updateTile(entry, component, tile, index) {
     const head = h('div', {class: 'tile-head'},
       h('span', {class: 'name', title: component.id}, displayName(component)), stateBadge(component), h('span', {class: 'spacer'}),
-      isWeb(component) ? h('button', {class: 'small', type: 'button', 'aria-pressed': String(tile.live), title: 'Live view or timestamped preview',
+      isWeb(component) ? h('button', {class: 'small', type: 'button', 'aria-pressed': String(tile.live), disabled: Boolean(history),
+        title: history ? 'Return to Now to use live views' : 'Live view or timestamped preview',
         onclick: () => { tile.live = !tile.live; render(); }}, tile.live ? 'Live' : 'Preview') : null,
-      h('button', {class: 'small', type: 'button', title: 'Focus this view', onclick: () => { focused = component.id; render(); }}, '⤢'),
+      h('button', {class: 'small', type: 'button', title: isWeb(component) ? 'Focus this view and its screen list' : 'Focus this view', onclick: () => { focused = component.id; render(); }}, '⤢'),
       h('button', {class: 'small', type: 'button', title: 'Details and history', onclick: () => openDrawer(component.id)}, 'ⓘ'),
       h('button', {class: 'small', type: 'button', title: 'Move earlier', disabled: index === 0, onclick: () => move(index, index - 1)}, '◀'),
       h('button', {class: 'small', type: 'button', title: 'Move later', disabled: index === layout.tiles.length - 1, onclick: () => move(index, index + 1)}, '▶'),
@@ -326,6 +383,25 @@
   function tileContent(component, live) {
     const body = h('div', {class: 'tile-body'});
     let foot;
+    if (component.historical) {
+      const status = component.status;
+      const container = status.container;
+      if (!isWeb(component)) {
+        body.append(h('div', {class: 'empty'}, 'Console output is not recorded. ',
+          container ? `Container ${container.value.state}${container.value.health ? `, ${container.value.health}` : ''}, as recorded ${new Date(container.observed_at).toLocaleString()}.` : 'No container state recorded by then.'));
+        return [body, h('div', {class: 'tile-foot'}, container ? container.source : 'No record')];
+      }
+      const gap = status.capture_at_time || {};
+      const missing = gap.missing ? h('span', {class: 'badge bad'}, 'missing capture') : null;
+      if (status.preview && gap.file_available) {
+        body.append(h('img', {src: `/observer/captures/${status.preview.value.file}`, alt: `Preview of ${displayName(component)}`, loading: 'lazy'}));
+        foot = h('div', {class: 'tile-foot'}, `Captured ${new Date(status.preview.observed_at).toLocaleTimeString()}, ${Math.round(gap.gap_seconds / 60)} min before the selected time `, missing);
+      } else {
+        body.append(h('div', {class: 'empty'}, status.preview ? 'The preview from that time has expired (previews are kept for 48 hours).' : 'No preview was captured at or before this time.'));
+        foot = h('div', {class: 'tile-foot'}, missing || 'No capture');
+      }
+      return [body, foot];
+    }
     if (!isWeb(component)) {
       const consoleNode = h('div', {class: 'console'}, 'Loading console…');
       body.append(consoleNode);
@@ -390,14 +466,48 @@
     existing?.remove();
     const component = focused && byId(focused);
     if (!component) return;
-    const body = tileContent(component, isWeb(component))[0];
+    const view = history ? historical(component) : component;
+    const body = tileContent(view, isWeb(component) && !history)[0];
+    const main = h('div', {class: 'focus-main'});
+    if (isWeb(component) && !history) main.append(screenList(component, body.querySelector('iframe')));
+    main.append(body);
     document.body.append(h('div', {class: 'focus', 'data-id': component.id, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
       h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component), h('span', {class: 'muted'}, component.web_path || ''),
         h('span', {style: 'flex:1'}),
         isWeb(component) ? h('a', {href: `${component.web_path}en-US/app/launcher/home`, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
         h('button', {type: 'button', onclick: () => openDrawer(component.id)}, 'Details'),
         h('button', {type: 'button', onclick: () => { focused = null; render(); }}, 'Close (Esc)')),
-      body));
+      main));
+  }
+
+  function screenList(component, frame) {
+    const panel = h('div', {class: 'screens', 'aria-label': 'Screens'}, h('p', {class: 'muted'}, 'Loading screens…'));
+    api(`/observer/api/components/${encodeURIComponent(component.id)}/screens`).then(result => {
+      const filter = h('input', {type: 'search', placeholder: `Filter ${result.screens.length} screens`, 'aria-label': 'Filter screens'});
+      const list = h('div', {});
+      const base = component.web_path.replace(/\/$/, '');
+      const draw = () => {
+        const term = filter.value.trim().toLowerCase();
+        const groups = new Map();
+        for (const screen of result.screens) {
+          const text = `${screen.app_label} ${screen.group || ''} ${screen.label}`.toLowerCase();
+          if (term && !text.includes(term)) continue;
+          const key = `${screen.app_label}${screen.app_version ? ` ${screen.app_version}` : ''}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(screen);
+        }
+        list.replaceChildren(...[...groups].map(([title, screens]) => h('section', {}, h('h4', {}, title),
+          screens.map(screen => h('button', {class: 'screen', type: 'button', title: `${screen.path} · ${screen.source}`,
+            'aria-current': String(frame.dataset.screen === screen.path),
+            onclick: () => { frame.dataset.screen = screen.path; frame.src = base + screen.path; draw(); }},
+            screen.group ? `${screen.group} › ${screen.label}` : screen.label)))));
+      };
+      filter.addEventListener('input', draw);
+      draw();
+      panel.replaceChildren(filter, list, h('p', {class: 'muted', style: 'font-size:.75rem'},
+        'From the installed apps’ navigation menus and Splunk’s built-in pages, checked ', stamp(result.checked_at), '.'));
+    }).catch(error => panel.replaceChildren(h('p', {class: 'notice'}, `Screens unavailable: ${error.message}`)));
+    return panel;
   }
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;

@@ -7,6 +7,7 @@ import re
 import shutil
 import ssl
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
@@ -19,6 +20,8 @@ from observer.store import utc_now
 
 PAGE = Path(__file__).with_name("view.html")
 LOGIN_PAGE = Path(__file__).with_name("login.html")
+# Previews are taken every 10 minutes; a gap beyond one and a half intervals counts as missing.
+MISSING_CAPTURE_SECONDS = 15 * 60
 COMPONENT_PATH = re.compile(r"^/lab/([A-Za-z0-9][A-Za-z0-9_.-]{0,62})/")
 COOKIE_ROOT_PATH = re.compile(r"(;\s*path=)/(?=;|$)", re.I)
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
@@ -156,6 +159,23 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self._json(200, {"component": parts[2], "source": f"podman logs --tail 60 {parts[2]}", "checked_at": checked_at,
                              "log": text, "resources": store.latest(parts[2], "resources"),
                              "container": store.latest(parts[2], "container")})
+        elif len(parts) == 4 and parts[:2] == ["api", "components"] and parts[3] == "screens" and get:
+            component = lab.component(parts[2])
+            if component is None:
+                self._json(404, {"error": "unknown_component"})
+                return
+            apps = component["facts"].get("installed_apps") or {}
+            self._json(200, {"component": parts[2], "web_path": component["web_path"], "screens": component["screens"],
+                             "source": apps.get("source"), "checked_at": apps.get("checked_at")})
+        elif parts == ["api", "at"] and get:
+            try:
+                moment = datetime.fromisoformat(query.get("time", [""])[0].replace("Z", "+00:00"))
+                if moment.tzinfo is None:
+                    raise ValueError
+            except ValueError:
+                self._json(400, {"error": "time must be an ISO 8601 timestamp with a zone"})
+                return
+            self._json(200, self._lab_at(moment.timestamp()))
         elif len(parts) == 3 and parts[:2] == ["api", "observations"] and parts[2].isdigit() and get:
             observation = store.observation(int(parts[2]))
             self._json(200 if observation else 404, observation or {"error": "unknown_observation"})
@@ -202,6 +222,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
         lab, store = self.server.lab, self.server.store
         snapshot = lab.snapshot()
         for component in snapshot["components"]:
+            # Screen lists are large; the wall fetches one component's list when it is focused.
+            component["screen_count"] = len(component.pop("screens", []))
             status = {}
             for kind in ("container", "web", "splunk_health", "splunk_messages", "capture", "resources"):
                 observation = store.latest(component["id"], kind)
@@ -220,7 +242,35 @@ class ObserverHandler(BaseHTTPRequestHandler):
         snapshot["capture"] = self.server.capture.status if self.server.capture else None
         snapshot["recent_changes"] = store.changes(limit=40)
         snapshot["login_required"] = self.server.login is not None
+        snapshot["history_from"] = store.earliest()
         return snapshot
+
+    def _lab_at(self, epoch):
+        """Every component's recorded state at one moment, with each preview's distance from it."""
+        lab, store = self.server.lab, self.server.store
+        components = {}
+        for component in lab.snapshot()["components"]:
+            status = {}
+            for kind in ("container", "web", "splunk_health", "splunk_messages", "resources"):
+                observation = store.latest_before(component["id"], kind, epoch)
+                if observation:
+                    status[kind] = {"id": observation["id"], "observed_at": observation["observed_at"],
+                                    "source": observation["source"], "value": observation["value"]}
+            capture_state = {"missing": bool(component["web_path"]), "gap_seconds": None, "file_available": False}
+            preview = store.latest_capture_before(component["id"], epoch) if component["web_path"] else None
+            if preview:
+                gap = epoch - datetime.fromisoformat(preview["observed_at"].replace("Z", "+00:00")).timestamp()
+                available = self.server.capture is not None and self.server.capture.path_for(preview["value"]["file"]) is not None
+                status["preview"] = {"id": preview["id"], "observed_at": preview["observed_at"], "source": preview["source"],
+                                     "value": preview["value"]}
+                capture_state = {"missing": gap > MISSING_CAPTURE_SECONDS or not available, "gap_seconds": round(gap),
+                                 "file_available": available}
+            status["capture_at_time"] = capture_state
+            components[component["id"]] = status
+        moment = datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return {"time": moment, "components": components,
+                "changes": store.changes_between(epoch - 1800, epoch + 1800),
+                "missing_capture_after_seconds": MISSING_CAPTURE_SECONDS}
 
     def _last_good_capture(self, component):
         rows = [change for change in self.server.store.changes(component, limit=200)

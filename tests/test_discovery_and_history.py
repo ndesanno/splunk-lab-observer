@@ -87,6 +87,91 @@ class DiscoveryTest(unittest.TestCase):
         self.assertTrue(any(error["component"] == "p-idx1" for error in registry["errors"]))
 
 
+class ScreenInventoryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(self.temp.name)
+        self.lab = Lab(FakeSource(), self.store)
+        self.lab.discover()
+        self.router = start_router()
+        self.observer = start(create_server(("127.0.0.1", 0), f"http://127.0.0.1:{self.router.server_port}", lab=self.lab, store=self.store))
+
+    def tearDown(self):
+        self.observer.shutdown()
+        self.observer.server_close()
+        self.router.shutdown()
+        self.router.server_close()
+        self.store.db.close()
+        self.temp.cleanup()
+
+    def test_screen_list_comes_from_installed_app_navigation(self):
+        status, result = call(self.observer.server_port, "GET", "/observer/api/components/p-sh1/screens")
+        self.assertEqual(status, 200)
+        screens = [(item["app"], item["group"], item["label"], item["path"]) for item in result["screens"]]
+        self.assertEqual(screens[:4], [
+            ("TA-hindsight", None, "Vulnerability Overview", "/en-US/app/TA-hindsight/hindsight_overview"),
+            ("TA-hindsight", "Review", "Apps and Add-ons", "/en-US/app/TA-hindsight/hindsight_apps"),
+            ("TA-hindsight", "Review", "Index settings", "/en-US/manager/search/data/indexes"),
+            ("federation_pulse_hq", None, "Federation Pulse", "/en-US/app/federation_pulse_hq/"),
+        ])
+        self.assertFalse(any(item["app"] == "hidden_ta" or "example.test" in item["path"] for item in result["screens"]))
+        self.assertTrue(result["source"] and result["checked_at"])
+        labels = {item["label"] for item in result["screens"] if item["app"] == "settings"}
+        self.assertNotIn("Indexer clustering", labels)
+        cm_labels = {item["label"] for item in self.lab.component("p-cm")["screens"] if item["app"] == "settings"}
+        self.assertIn("Indexer clustering", cm_labels)
+        versions = {app["app"]: app["version"] for app in self.lab.component("p-sh1")["facts"]["installed_apps"]["value"]}
+        self.assertEqual(versions["federation_pulse_hq"], "0.10.6")
+
+    def test_lab_summary_leaves_screen_lists_to_the_focused_view(self):
+        _status, lab = call(self.observer.server_port, "GET", "/observer/api/lab")
+        sh1 = next(item for item in lab["components"] if item["id"] == "p-sh1")
+        self.assertNotIn("screens", sh1)
+        self.assertEqual(sh1["screen_count"], len(self.lab.component("p-sh1")["screens"]))
+
+
+class ReplayTest(unittest.TestCase):
+    def test_time_selection_aligns_observations_and_marks_missing_captures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            lab = Lab(FakeSource(), store)
+            lab.discover()
+            capture = Capture(lab, store, directory)
+            (Path(directory) / "captures" / "p-sh1").mkdir()
+            (Path(directory) / "captures" / "p-sh1" / "1.jpg").write_bytes(b"jpeg")
+            store.record("p-sh1", "container", "podman ps", {"state": "running"}, {"container_state": "running"}, observed_at="2026-11-08T12:00:00Z")
+            store.record("p-sh1", "capture", "headless", {"file": "p-sh1/1.jpg", "page": "/x"}, {"capture": "captured"}, observed_at="2026-11-08T12:00:00Z")
+            store.record("p-sh1", "container", "podman ps", {"state": "exited"}, {"container_state": "exited"}, observed_at="2026-11-08T12:10:00Z")
+            store.record("p-sh2", "container", "podman ps", {"state": "running"}, {"container_state": "running"}, observed_at="2026-11-08T12:00:00Z")
+            router = start_router()
+            observer = start(create_server(("127.0.0.1", 0), f"http://127.0.0.1:{router.server_port}", lab=lab, store=store, capture=capture))
+            try:
+                status, at = call(observer.server_port, "GET", "/observer/api/at?time=2026-11-08T12:05:00Z")
+                self.assertEqual(status, 200)
+                sh1, sh2 = at["components"]["p-sh1"], at["components"]["p-sh2"]
+                self.assertEqual(sh1["container"]["value"]["state"], "running")
+                self.assertEqual(sh1["preview"]["value"]["file"], "p-sh1/1.jpg")
+                self.assertEqual(sh1["capture_at_time"], {"missing": False, "gap_seconds": 300, "file_available": True})
+                self.assertTrue(sh2["capture_at_time"]["missing"])
+                self.assertNotIn("preview", sh2)
+                self.assertFalse(at["components"]["p-uf"]["capture_at_time"]["missing"])
+                self.assertIn(("p-sh1", "container_state", "exited"), {(c["component"], c["signal"], c["current"]) for c in at["changes"]})
+
+                _status, later = call(observer.server_port, "GET", "/observer/api/at?time=2026-11-08T12:30:00Z")
+                self.assertEqual(later["components"]["p-sh1"]["container"]["value"]["state"], "exited")
+                self.assertTrue(later["components"]["p-sh1"]["capture_at_time"]["missing"])
+
+                _status, before = call(observer.server_port, "GET", "/observer/api/at?time=2026-11-08T11:00:00Z")
+                self.assertNotIn("container", before["components"]["p-sh1"])
+                self.assertEqual(call(observer.server_port, "GET", "/observer/api/at?time=yesterday")[0], 400)
+            finally:
+                observer.shutdown()
+                observer.server_close()
+                router.shutdown()
+                router.server_close()
+                store.db.close()
+
+
 class HistoryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

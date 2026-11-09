@@ -5,8 +5,10 @@ Owner-edited names and descriptions are kept apart from discovered facts.
 """
 
 import base64
+import hashlib
 import json
 import re
+import xml.etree.ElementTree as ElementTree
 import ssl
 import subprocess
 import threading
@@ -20,6 +22,16 @@ from observer.store import utc_now
 
 
 DEFAULT_SPLUNK_CONFIG = Path.home() / ".config" / "splunk-lab-observer" / "splunk.json"
+APP_PROBE = Path(__file__).with_name("app_probe.py")
+# Splunk Web pages that exist on every instance, plus pages that exist only for a role.
+BUILTIN_SCREENS = [
+    ("Settings", "Indexes", "/en-US/manager/search/data/indexes", None),
+    ("Settings", "Apps", "/en-US/manager/launcher/apps/local", None),
+    ("Settings", "Users", "/en-US/manager/launcher/authentication/users", None),
+    ("Settings", "Server settings", "/en-US/manager/launcher/server/settings", None),
+    ("Settings", "Indexer clustering", "/en-US/manager/system/clustering", {"cluster_manager", "cluster_peer", "cluster_search_head"}),
+    ("Settings", "Forwarding and receiving", "/en-US/manager/launcher/forwardreceive", None),
+]
 LAB_NETWORK = "pulseprod"
 
 
@@ -114,6 +126,43 @@ class PodmanSplunkSource:
         return {item.get("name") or item.get("Name"): item for item in json.loads(result.stdout or "[]")}
 
 
+def screens_from_nav(app):
+    """Screens in an app's navigation menu, in menu order, with view labels from the view files."""
+    base = f"/en-US/app/{app['app']}/"
+    screens, seen = [], set()
+
+    def add(label, path, group):
+        if path in seen:
+            return
+        seen.add(path)
+        screens.append({"app": app["app"], "app_label": app["label"] or app["app"], "app_version": app["version"],
+                        "group": group, "label": label, "path": path, "source": f"{app['app']} navigation menu"})
+
+    def walk(node, group):
+        for child in node:
+            if child.tag == "view" and child.get("name"):
+                name = child.get("name")
+                add(app["views"].get(name) or name.replace("_", " ").capitalize(), base + name, group)
+            elif child.tag == "a" and child.get("href"):
+                href = child.get("href").strip()
+                if href.startswith(("http:", "https:", "//")):
+                    continue
+                path = href if href.startswith("/en-US/") else ("/en-US" + href if href.startswith("/") else base + href)
+                add((child.text or href).strip(), path, group)
+            elif child.tag == "collection":
+                walk(child, child.get("label") or group)
+
+    try:
+        root = ElementTree.fromstring(app["nav"]) if app.get("nav") else None
+    except ElementTree.ParseError:
+        root = None
+    if root is not None:
+        walk(root, None)
+    if not screens:
+        add(app["label"] or app["app"], base, None)
+    return screens
+
+
 def entries(payload):
     return [entry for entry in payload.get("entry", [])]
 
@@ -142,6 +191,7 @@ class Lab:
                 "kind": kind,
                 # Every Splunk Enterprise instance serves Splunk Web under /lab/<name>/ (see the lab's observer.sh).
                 "web_path": f"/lab/{name}/" if kind == "splunk_enterprise" else None,
+                "screens": [],
                 "facts": {
                     "kind": fact(kind, f"{source} (image {container['image']})", checked_at),
                     "image": fact(container["image"], source, checked_at),
@@ -154,8 +204,19 @@ class Lab:
         splunk = [name for name, component in components.items() if component["kind"] == "splunk_enterprise"]
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = dict(zip(splunk, pool.map(self._discover_splunk, splunk)))
+        running_splunk = [name for name in splunk if components[name]["facts"]["container_state"]["value"] == "running"]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            app_results = dict(zip(running_splunk, pool.map(self._discover_apps, running_splunk)))
         for name, (facts, found_groups, found_relationships, problems) in results.items():
             components[name]["facts"].update(facts)
+            apps, screens, app_source, app_error = app_results.get(name, (None, [], None, None))
+            if apps is not None:
+                components[name]["facts"]["installed_apps"] = fact(
+                    [{key: app[key] for key in ("app", "label", "version", "build", "visible", "disabled")} for app in apps],
+                    app_source, checked_at)
+                components[name]["screens"] = screens + self._builtin_screens(facts)
+            elif app_error:
+                errors.append({"component": name, "source": app_source, "error": app_error})
             groups.extend(found_groups)
             relationships.extend(found_relationships)
             errors.extend(problems)
@@ -232,6 +293,28 @@ class Lab:
             relationships.append({"from": name, "to": host, "type": "federated search provider",
                                   "detail": entry["name"], "source": providers_source, "checked_at": checked_at})
         return facts, groups, relationships, problems
+
+    def _discover_apps(self, name):
+        source = f"podman exec {name} (installed app.conf, navigation, and view files under etc/apps)"
+        try:
+            text = self.source.read_command(name, ["/opt/splunk/bin/splunk", "cmd", "python3", "-c", APP_PROBE.read_text()],
+                                            user="splunk")
+            apps = json.loads(text)
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+            return None, [], source, str(error)[:200]
+        screens = []
+        for app in apps:
+            if not app["visible"] or app["disabled"]:
+                continue
+            screens.extend(screens_from_nav(app))
+        return apps, screens, source, None
+
+    @staticmethod
+    def _builtin_screens(facts):
+        roles = set((facts.get("server_roles") or {}).get("value", []))
+        return [{"app": "settings", "app_label": group, "app_version": None, "group": None, "label": label, "path": path,
+                 "source": "Splunk Web built-in page"}
+                for group, label, path, needs in BUILTIN_SCREENS if needs is None or roles & needs]
 
     def _discover_load_balancer(self, name, checked_at, errors):
         source = f"podman exec {name} cat /usr/local/etc/haproxy/haproxy.cfg"

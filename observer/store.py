@@ -84,6 +84,27 @@ class Store:
                 (component, kind, epoch)).fetchone()
         return self._observation(row) if row else None
 
+    def latest_capture_before(self, component, epoch):
+        """The newest successful preview at or before a time."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT * FROM observations WHERE component = ? AND kind = 'capture' AND epoch <= ?"
+                " AND json_extract(value, '$.file') IS NOT NULL ORDER BY epoch DESC, id DESC LIMIT 1",
+                (component, epoch)).fetchone()
+        return self._observation(row) if row else None
+
+    def changes_between(self, start_epoch, end_epoch, limit=300):
+        with self.lock:
+            rows = self.db.execute("SELECT * FROM changes WHERE epoch BETWEEN ? AND ? ORDER BY epoch, id LIMIT ?",
+                                   (start_epoch, end_epoch, limit)).fetchall()
+        return [{key: row[key] for key in ("id", "component", "signal", "observed_at", "previous", "current", "source", "observation_id")}
+                for row in rows]
+
+    def earliest(self):
+        with self.lock:
+            row = self.db.execute("SELECT observed_at FROM observations ORDER BY epoch LIMIT 1").fetchone()
+        return row["observed_at"] if row else None
+
     def changes(self, component=None, limit=200):
         query = "SELECT * FROM changes"
         args = []

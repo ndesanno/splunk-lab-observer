@@ -4,6 +4,8 @@ Each poll stores observations; a status that differs from its last value becomes
 change in the component's history, linked to the observation that showed it.
 """
 
+import hashlib
+import json
 import threading
 import time
 import urllib.error
@@ -15,6 +17,12 @@ from observer.store import utc_now
 HEALTH_INTERVAL_SECONDS = 60
 DISCOVERY_INTERVAL_SECONDS = 300
 PRUNE_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+def previous_signal(store, component):
+    with store.lock:
+        row = store.db.execute("SELECT value FROM signals WHERE component = ? AND signal = 'installed_apps'", (component,)).fetchone()
+    return row["value"] if row else None
 
 
 class Monitor:
@@ -59,6 +67,26 @@ class Monitor:
                           {"components": len(registry["components"]), "groups": len(registry["groups"]),
                            "relationships": len(registry["relationships"]), "errors": registry["errors"]},
                           {"component_count": len(registry["components"])}, observed_at=registry["checked_at"])
+        # Installed apps per instance: an install, upgrade, removal, or enable/disable is a change.
+        for component in registry["components"]:
+            apps = component["facts"].get("installed_apps")
+            if not apps:
+                continue
+            versions = {app["app"]: f"{app['version'] or '?'}{' (disabled)' if app['disabled'] else ''}" for app in apps["value"]}
+            previous = self.store.latest(component["id"], "apps")
+            if previous:
+                before = previous["value"]["versions"]
+                summary = "; ".join(
+                    [f"{name} installed {versions[name]}" for name in sorted(set(versions) - set(before))] +
+                    [f"{name} removed" for name in sorted(set(before) - set(versions))] +
+                    [f"{name} {before[name]} → {versions[name]}" for name in sorted(set(versions) & set(before)) if before[name] != versions[name]])
+            else:
+                summary = None
+            digest = hashlib.sha256(json.dumps(versions, sort_keys=True).encode()).hexdigest()[:12]
+            self.store.record(component["id"], "apps", apps["source"], {"versions": versions, "summary": summary},
+                              {"installed_apps": f"{len(versions)} apps, {summary or 'baseline'} [{digest}]"
+                               if summary or not previous else previous_signal(self.store, component["id"])},
+                              observed_at=registry["checked_at"])
 
     def collect(self):
         observed_at = utc_now()
