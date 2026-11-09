@@ -45,6 +45,13 @@ TRANSFORMING = re.compile(r"(^\s*\|\s*(tstats|mstats|rest|metadata|eventcount|db
 # Changes never touch stored secrets or the accounts the observer and the owner sign in with.
 CHANGE_BLOCKED = re.compile(r"/storage/passwords|/authentication/users/(admin|lab_operator|lab_observer)\b|"
                             r"/authorization/roles/(admin|lab_observer)\b|/server/control|/authentication/providers", re.I)
+# A click on one of these, or on a submit button, may change the lab, so it needs the owner's approval.
+RISKY_LABEL = re.compile(r"(?i)\b(save|delete|remove|submit|apply|create|add|new|enable|disable|restart|update|confirm|"
+                         r"install|uninstall|upgrade|publish|clone|move|rename|reassign|run|schedule|import|upload|"
+                         r"rebalance|rolling|push|reload|ok|yes|accept|activate|deactivate|reset|clear)\b")
+RISKY_HREF = re.compile(r"(?i)(delete|disable|enable|remove|restart|_reload|action=)")
+PAGE_TIMEOUT_SECONDS = 15 * 60
+PAGE_STALE_SECONDS = 15
 SECRET_KEYS = re.compile(r"(?i)pass(word)?|secret|token|pass4symmkey|sslpassword")
 SECRET_TEXT = re.compile(r"(?i)(pass(word|wd)?|secret|token|api[_-]?key|pass4symmkey)(\"?\s*[:=]\s*)\S+")
 
@@ -67,6 +74,12 @@ previous state. If the owner declines, do not retry the same change; ask what th
 change, check its effect with the read-only tools and show it.
 - Name any test objects you create with a test_fixture_ prefix so they are easy to find and remove, and clean \
 them up (with approval) when the test is done.
+- To show or test an app workflow in Splunk Web, first propose_walkthrough with short steps and wait for the \
+owner to agree. Then work in the owner's live view with read_screen, click, type_text and select_option, and call \
+checkpoint after each agreed step. Read the screen again after anything changes. If the view shows Splunk's sign-in \
+page, ask the owner to sign in; never type passwords. Clicks that save, delete, enable or submit wait for approval. \
+To run a search in Splunk Web, open /en-US/app/search/search?q=<URL-encoded SPL>&earliest=-60m with show_screen \
+(the search bar is a code editor that typing cannot drive); raw events on screen are left out of read_screen.
 - Searches must aggregate (stats, timechart, tstats, top and similar); raw events are not available to you.
 - Keep answers short and concrete. Use plain text with short lists; no tables wider than four columns."""
 
@@ -137,6 +150,9 @@ class Run:
         self.lock = threading.Lock()
         self.cancel = threading.Event()
         self.approvals = {}  # approval id -> (threading.Event, decision dict)
+        self.page_requests = {}  # request id -> (threading.Event, result dict)
+        self.screens = {}  # component -> {ref: element} from the owner's page's last reading
+        self.page_seen = 0.0  # last time an observer page polled this run
         if record:
             self.record = record
         else:
@@ -148,10 +164,10 @@ class Run:
     def id(self):
         return self.record["id"]
 
-    def event(self, kind, **fields):
+    def event(self, event_type, **fields):
         with self.lock:
             self.record["rev"] = self.record.get("rev", 0) + 1
-            item = {"seq": len(self.record["events"]) + 1, "rev": self.record["rev"], "at": utc_now(), "type": kind, **fields}
+            item = {"seq": len(self.record["events"]) + 1, "rev": self.record["rev"], "at": utc_now(), "type": event_type, **fields}
             self.record["events"].append(item)
         self.save()
         return item
@@ -185,12 +201,13 @@ class Run:
 
     # --- approvals ------------------------------------------------------------------
 
-    def ask_approval(self, action, details):
+    def ask_approval(self, action, details, kind="change"):
+        """Wait for the owner's decision on a change, a walkthrough plan, or a checkpoint."""
         approval_id = secrets.token_hex(4)
         waiter = threading.Event()
         decision = {}
         self.approvals[approval_id] = (waiter, decision)
-        item = self.event("approval", approval_id=approval_id, action=action, details=details, decision="pending")
+        item = self.event("approval", approval_id=approval_id, kind=kind, action=action, details=details, decision="pending")
         self.set_status("waiting_for_approval")
         deadline = time.time() + APPROVAL_TIMEOUT_SECONDS
         while not waiter.is_set() and not self.cancel.is_set() and time.time() < deadline:
@@ -203,6 +220,48 @@ class Run:
         self.update_event(item["seq"], decision=decision["decision"], note=decision.get("note"), decided_at=utc_now())
         self.set_status("running")
         return decision
+
+    def ask_page(self, action, payload):
+        """Ask the owner's open observer page to read or act in its live Splunk view, and wait for the result.
+        The page holds requests while the owner has paused or taken over."""
+        if time.time() - self.page_seen > PAGE_STALE_SECONDS:
+            raise RuntimeError("The owner's observer page is not open on this run, so there is no shared view to use")
+        request_id = secrets.token_hex(4)
+        waiter = threading.Event()
+        result = {}
+        self.page_requests[request_id] = (waiter, result)
+        item = self.event("browser", request_id=request_id, action=action, payload=payload, status="pending")
+        deadline = time.time() + PAGE_TIMEOUT_SECONDS
+        while not waiter.is_set() and not self.cancel.is_set() and time.time() < deadline:
+            waiter.wait(0.5)
+        self.page_requests.pop(request_id, None)
+        if not waiter.is_set():
+            self.update_event(item["seq"], status="stopped" if self.cancel.is_set() else "expired")
+            raise RuntimeError("The owner stopped this run" if self.cancel.is_set() else "The owner's page did not answer within 15 minutes")
+        self.update_event(item["seq"], status="done" if result.get("ok") else "failed",
+                          summary=(result.get("result") or {}).get("summary"), done_at=utc_now())
+        if not result.get("ok"):
+            raise RuntimeError((result.get("result") or {}).get("error") or "The page could not do that")
+        return result["result"]
+
+    def page_result(self, request_id, ok, result):
+        pending = self.page_requests.get(request_id)
+        if pending is None or pending[0].is_set():
+            return False
+        pending[1].update({"ok": bool(ok), "result": result if isinstance(result, dict) else {}})
+        pending[0].set()
+        return True
+
+    def control(self, action):
+        """The owner paused, took over, or resumed the AI's use of the shared view."""
+        text = {"pause": "You paused Claude's actions in the shared view.",
+                "takeover": "You took over the shared view; Claude waits until you hand it back.",
+                "resume": "You handed the shared view back to Claude."}.get(action)
+        if text is None:
+            return False
+        self.record["paused"] = action != "resume"
+        self.event("control", action=action, text=text)
+        return True
 
     def decide(self, approval_id, decision, note=None):
         pending = self.approvals.get(approval_id)
@@ -355,6 +414,8 @@ class Assistant:
             message = f"HTTP {error.code} from {source}"
         except (OSError, ValueError, KeyError, RuntimeError) as error:
             message = f"{error.__class__.__name__}: {error}"[:500]
+        except Exception as error:  # a defect in a tool still ends its step and reaches Claude as an error
+            message = f"Tool failed ({error.__class__.__name__}: {error})"[:500]
         run.update_event(item["seq"], status="error", result=message, seconds=round(time.time() - started, 2))
         raise ToolError(message)
 
@@ -440,7 +501,8 @@ class Assistant:
             """
             def work():
                 found = self._component(component)
-                if path and (not found["web_path"] or not path.startswith("/en-US/") or ".." in path or "//" in path):
+                if path and (not found["web_path"] or not path.startswith("/en-US/") or "//" in path.split("?")[0]
+                             or ".." in path.split("?")[0]):
                     raise ValueError("path must be a Splunk Web path starting with /en-US/ on an instance with Splunk Web")
                 target = path or ("/en-US/app/launcher/home" if found["web_path"] else "")
                 run.event("display", component=component, path=target)
@@ -571,8 +633,172 @@ class Assistant:
                         "note": "Splunk can take one to three minutes to serve requests after a start or restart."}
             return self._call(run, "container_action", arguments, f"podman {action} {component} (owner approval)", work)
 
+        def screen_reply(component, snapshot):
+            """Keep the element map for approval checks and give the model a compact reading."""
+            elements = snapshot.get("elements") or []
+            run.screens[component] = {item["ref"]: item for item in elements if isinstance(item, dict) and item.get("ref")}
+            lines = []
+            for item in elements[:150]:
+                extra = "".join(f" {key}={item[key]!r}" for key in ("type", "value", "href") if item.get(key))
+                lines.append(f"[{item.get('ref')}] {item.get('role')} {item.get('label')!r}{extra}{' (in form)' if item.get('in_form') else ''}")
+            reply = {"url": snapshot.get("url"), "title": snapshot.get("title"), "text": _clip(snapshot.get("text") or "", 5000),
+                     "elements": lines}
+            if snapshot.get("login_page"):
+                reply["note"] = "This is Splunk's sign-in page. Ask the owner to sign in in the shared view; never type a password."
+            if snapshot.get("owner_took_over"):
+                reply["note"] = "The owner took over the view before this step and may have changed the page."
+            if snapshot.get("omitted"):
+                reply["omitted"] = snapshot["omitted"]
+            return reply
+
+        def web_component(component):
+            found = self._component(component, web=True)
+            return found
+
+        @beta_tool
+        def read_screen(component: str) -> str:
+            """Read what the owner's live Splunk Web view of a component shows: its URL, visible text, and numbered
+            interactive elements ([e12] button 'Save') to use with click, type_text and select_option. Opens the
+            component in the owner's view first if needed. Raw event text and password values are left out.
+
+            Args:
+                component: Component id with Splunk Web.
+            """
+            def work():
+                web_component(component)
+                return screen_reply(component, run.ask_page("read", {"component": component}))
+            return self._call(run, "read_screen", {"component": component}, f"owner's live view of {component}", work)
+
+        def guarded(component, ref, action, label_for_approval, why, extra=None):
+            element = run.screens.get(component, {}).get(ref)
+            if element is None:
+                raise ValueError(f"No element {ref} in the last reading of {component}; call read_screen first")
+            risky = (action == "click" and (RISKY_LABEL.search(element.get("label") or "") or element.get("type") == "submit"
+                                            or RISKY_HREF.search(element.get("href") or ""))) or \
+                    (action == "type" and (extra or {}).get("press_enter") and element.get("in_form") and element.get("type") != "search")
+            if risky:
+                decision = run.ask_approval(f"{label_for_approval} in {component}", {
+                    "reason": why, "expected_effect": f"May change the lab: {element.get('role')} {element.get('label')!r}"
+                    f" on {(run.screens.get(component) and element.get('page')) or 'the current page'}",
+                    "cleanup": (extra or {}).get("cleanup") or "Claude must state how to undo this in the conversation"})
+                if decision["decision"] != "approved":
+                    raise ToolError({"declined": "The owner declined this action.", "expired": "No decision within 15 minutes.",
+                                     "stopped": "The owner stopped this run."}[decision["decision"]] +
+                                    (f" Owner's note: {decision['note']}" if decision.get("note") else ""))
+            return element
+
+        @beta_tool
+        def click(component: str, ref: str, why: str, cleanup: str = "") -> str:
+            """Click an element from the last read_screen of a component, in the owner's live view, and return the new
+            reading. The owner sees the element highlighted. Clicks on buttons such as Save, Delete, Enable or Apply,
+            and on submit buttons, wait for the owner's approval.
+
+            Args:
+                component: Component id with Splunk Web.
+                ref: Element reference from read_screen, e.g. e12.
+                why: What this click does in the workflow, in a few words; shown to the owner.
+                cleanup: For a click that changes the lab, how to undo it.
+            """
+            def work():
+                web_component(component)
+                element = guarded(component, ref, "click", f"Click {element_label(component, ref)}", why, {"cleanup": cleanup})
+                return screen_reply(component, run.ask_page("click", {"component": component, "ref": ref, "why": why,
+                                                                        "label": element.get("label")}))
+            return self._call(run, "click", {"component": component, "ref": ref, "why": why},
+                              f"owner's live view of {component}", work)
+
+        def element_label(component, ref):
+            element = run.screens.get(component, {}).get(ref) or {}
+            return f"{element.get('role', 'element')} {element.get('label')!r}"
+
+        @beta_tool
+        def type_text(component: str, ref: str, text: str, why: str, press_enter: bool = False) -> str:
+            """Type into a text field from the last read_screen, in the owner's live view, and return the new reading.
+            Never use it for passwords; password fields are refused. Pressing Enter in a form field waits for the
+            owner's approval because it can submit the form.
+
+            Args:
+                component: Component id with Splunk Web.
+                ref: Element reference of the field.
+                text: The text to enter (replaces the field's current value).
+                why: What this input is for, in a few words; shown to the owner.
+                press_enter: Press Enter after typing, e.g. to run a search.
+            """
+            def work():
+                web_component(component)
+                element = guarded(component, ref, "type", f"Type into {element_label(component, ref)} and press Enter", why,
+                                  {"press_enter": press_enter})
+                if element.get("type") == "password":
+                    raise ValueError("Password fields are for the owner only")
+                return screen_reply(component, run.ask_page("type", {"component": component, "ref": ref, "text": text,
+                                                                       "press_enter": press_enter, "why": why,
+                                                                       "label": element.get("label")}))
+            return self._call(run, "type_text", {"component": component, "ref": ref, "text": text, "why": why,
+                                                 "press_enter": press_enter}, f"owner's live view of {component}", work)
+
+        @beta_tool
+        def select_option(component: str, ref: str, value: str, why: str) -> str:
+            """Choose an option in a dropdown (select element) from the last read_screen, in the owner's live view.
+
+            Args:
+                component: Component id with Splunk Web.
+                ref: Element reference of the select.
+                value: The option's value or visible label.
+                why: What this choice is for; shown to the owner.
+            """
+            def work():
+                web_component(component)
+                element = guarded(component, ref, "select", f"Select {value!r}", why)
+                return screen_reply(component, run.ask_page("select", {"component": component, "ref": ref, "value": value,
+                                                                         "why": why, "label": element.get("label")}))
+            return self._call(run, "select_option", {"component": component, "ref": ref, "value": value, "why": why},
+                              f"owner's live view of {component}", work)
+
+        @beta_tool
+        def propose_walkthrough(goal: str, steps: list[str]) -> str:
+            """Before guiding the owner through an app workflow in the shared view, propose the steps and wait for the
+            owner to agree. Then do the steps in order and call checkpoint after each one.
+
+            Args:
+                goal: What the walkthrough shows or tests, in one sentence.
+                steps: Short, ordered steps, e.g. ["Open Hindsight Vulnerability Overview", "Filter to critical hosts"].
+            """
+            arguments = {"goal": goal, "steps": steps}
+
+            def work():
+                if not steps or len(steps) > 30:
+                    raise ValueError("Give between 1 and 30 steps")
+                decision = run.ask_approval(f"Walkthrough: {goal}", {"goal": goal, "steps": steps}, kind="plan")
+                run.record["walkthrough"] = {"goal": goal, "steps": steps, "agreed": decision["decision"] == "approved"}
+                if decision["decision"] != "approved":
+                    raise ToolError("The owner did not start this walkthrough." +
+                                    (f" Owner's note: {decision['note']}" if decision.get("note") else ""))
+                return {"agreed": True, "note": decision.get("note"), "steps": steps}
+            return self._call(run, "propose_walkthrough", arguments, "owner decision", work)
+
+        @beta_tool
+        def checkpoint(step_done: str, observed: str, next_step: str = "") -> str:
+            """Pause after each agreed walkthrough step until the owner continues. Say what was done and what the screen
+            showed, so the owner can compare it with the view.
+
+            Args:
+                step_done: The step just completed.
+                observed: What the screen showed as the result, with any values that matter.
+                next_step: The next agreed step, or empty if the walkthrough is complete.
+            """
+            arguments = {"step_done": step_done, "observed": observed, "next_step": next_step}
+
+            def work():
+                decision = run.ask_approval(f"Step done: {step_done}", arguments, kind="checkpoint")
+                if decision["decision"] != "approved":
+                    raise ToolError("The owner stopped the walkthrough here." +
+                                    (f" Owner's note: {decision['note']}" if decision.get("note") else ""))
+                return {"continue": True, "note": decision.get("note")}
+            return self._call(run, "checkpoint", arguments, "owner decision", work)
+
         tools = [lab_overview, component_status, list_screens, show_screen, splunk_rest_get, run_search,
-                 container_logs, recorded_changes, container_action]
+                 container_logs, recorded_changes, container_action, read_screen, click, type_text, select_option,
+                 propose_walkthrough, checkpoint]
         operator = self.operator
         if operator is None:
             return tools

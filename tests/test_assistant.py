@@ -365,3 +365,93 @@ class TerminalSessionTest(unittest.TestCase):
 
     def assistant_key(self, server):
         server.assistant.key.save(KEY)
+
+
+@unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")
+class SharedViewTest(AssistantFixture):
+    """Claude reads and acts in the owner's live view through the open page; risky clicks need approval."""
+
+    SCREEN = {"url": "/en-US/app/search/search", "title": "Search", "text": "Search & Reporting", "summary": "Search",
+              "omitted": "2 raw event(s) on screen were left out",
+              "elements": [{"ref": "e1", "role": "link", "label": "Datasets", "href": "/en-US/app/search/datasets"},
+                           {"ref": "e2", "role": "button", "label": "Save As", "type": ""},
+                           {"ref": "e3", "role": "password field", "label": "Password", "type": "password", "value": "(hidden)"},
+                           {"ref": "e4", "role": "text field", "label": "Name", "type": "text", "in_form": True}]}
+
+    def page(self, run, answers):
+        """Act as the owner's open page: keep polling, answer each request in turn."""
+        stop = threading.Event()
+
+        def loop():
+            handled = set()
+            while not stop.is_set():
+                run.page_seen = time.time()
+                for item in list(run.record["events"]):
+                    if item["type"] == "browser" and item["status"] == "pending" and item["request_id"] not in handled:
+                        handled.add(item["request_id"])
+                        answers.append((item["action"], item["payload"]))
+                        run.page_result(item["request_id"], True, dict(self.SCREEN))
+                time.sleep(0.02)
+        threading.Thread(target=loop, daemon=True).start()
+        return stop
+
+    def test_walkthrough_reads_clicks_and_waits_at_checkpoints(self):
+        self.api.script = [
+            message([tool_use("t1", "propose_walkthrough", {"goal": "Open datasets", "steps": ["Read the search page", "Open Datasets"]})], "tool_use"),
+            message([tool_use("t2", "read_screen", {"component": "p-sh1"})], "tool_use"),
+            message([tool_use("t3", "click", {"component": "p-sh1", "ref": "e1", "why": "Open Datasets"}),
+                     tool_use("t4", "type_text", {"component": "p-sh1", "ref": "e3", "text": "x", "why": "no"})], "tool_use"),
+            message([tool_use("t5", "checkpoint", {"step_done": "Open Datasets", "observed": "Datasets list", "next_step": ""})], "tool_use"),
+            message([{"type": "text", "text": "Done."}], "end_turn"),
+        ]
+        run = self.assistant.start("Walk me through datasets")
+        answers = []
+        stop = self.page(run, answers)
+        try:
+            self.wait(run, lambda item: item.record["status"] == "waiting_for_approval")
+            plan = next(item for item in run.record["events"] if item["type"] == "approval")
+            self.assertEqual((plan["kind"], plan["details"]["steps"]), ("plan", ["Read the search page", "Open Datasets"]))
+            self.assertEqual(answers, [])  # nothing happens in the view before the owner starts
+            run.decide(plan["approval_id"], "approve")
+            self.wait(run, lambda item: any(e["type"] == "approval" and e.get("kind") == "checkpoint" for e in item.record["events"]))
+            self.assertEqual([action for action, _ in answers], ["read", "click"])  # the password field was refused
+            checkpoint = next(item for item in run.record["events"] if item.get("kind") == "checkpoint")
+            run.decide(checkpoint["approval_id"], "approve")
+            self.wait(run, self.finished)
+        finally:
+            stop.set()
+        self.assertEqual(run.record["status"], "done")
+        results = {item["tool_use_id"]: item for item in self.api.requests[2]["body"]["messages"][-1]["content"]}
+        reading = json.dumps(results)
+        self.assertIn("[e1] link 'Datasets'", reading)
+        self.assertIn("raw event(s) on screen were left out", reading)
+        results = {item["tool_use_id"]: item for item in self.api.requests[3]["body"]["messages"][-1]["content"]}
+        self.assertFalse(results["t3"].get("is_error"))
+        self.assertTrue(results["t4"]["is_error"])
+        self.assertEqual([e["action"] for e in run.record["events"] if e["type"] == "browser"], ["read", "click"])
+
+    def test_a_save_click_needs_approval_and_a_closed_page_is_reported(self):
+        self.api.script = [
+            message([tool_use("t1", "read_screen", {"component": "p-sh1"})], "tool_use"),
+            message([tool_use("t2", "click", {"component": "p-sh1", "ref": "e2", "why": "Save the search"})], "tool_use"),
+            message([tool_use("t3", "read_screen", {"component": "p-sh1"})], "tool_use"),
+            message([{"type": "text", "text": "ok"}], "end_turn"),
+        ]
+        run = self.assistant.start("Save this search")
+        answers = []
+        stop = self.page(run, answers)
+        try:
+            self.wait(run, lambda item: item.record["status"] == "waiting_for_approval")
+            approval = next(item for item in run.record["events"] if item["type"] == "approval")
+            self.assertIn("Save As", approval["action"])
+            self.assertEqual([action for action, _ in answers], ["read"])
+            stop.set()  # the owner closes the page, then declines from another tab
+            run.page_seen = 0
+            run.decide(approval["approval_id"], "deny")
+            self.wait(run, self.finished)
+        finally:
+            stop.set()
+        self.assertEqual([action for action, _ in answers], ["read"])
+        last = self.api.requests[3]["body"]["messages"][-1]["content"][0]
+        self.assertTrue(last["is_error"])
+        self.assertIn("not open", json.dumps(last["content"]))

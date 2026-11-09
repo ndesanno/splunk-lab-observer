@@ -927,6 +927,7 @@
   async function selectRun(id, follow) {
     clearTimeout(assistant.timer);
     assistant.run = null; assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set();
+    pageRun.paused = false; pageRun.tookOver = false;
     if (id) await fetchRun(id, !follow);
     renderAssistant();
   }
@@ -962,6 +963,7 @@
         refresh(); setTimeout(refresh, 20000); setTimeout(refresh, 70000);
       }
       if (item.type === 'approval' && item.decision === 'pending' && !assistant.open) setAssistantOpen(true);
+      if (item.type === 'browser' && item.status === 'pending') runPageRequest(item);
     }
     const wasActive = liveRun();
     assistant.run = Object.assign({}, result, {events: undefined});
@@ -969,6 +971,112 @@
     if (liveRun()) assistant.timer = setTimeout(() => fetchRun(id), 1000);
     else if (wasActive) { refresh(); loadAssistant(); }
   }
+  // --- shared view: Claude's reads and actions run here, in the owner's own live view ---
+  // Splunk's event list holds raw event text, which stays on this computer.
+  const NOT_FOR_MODEL = '[data-view^="views/shared/eventsviewer"], .shared-eventsviewer, .raw-event, .json-event, td.event, script, style, noscript, svg, template';
+  const INTERACTIVE = 'a[href], button, input, select, textarea, [role=button], [role=tab], [role=menuitem], [role=link], [role=checkbox], [role=option], [role=combobox], [role=switch]';
+  const pageRun = {executed: new Set(), paused: false, tookOver: false};
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function visible(el) {
+    const box = el.getBoundingClientRect();
+    if (!box.width || !box.height) return false;
+    const style = el.ownerDocument.defaultView.getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+  function snapshot(frame) {
+    const doc = frame.contentDocument;
+    if (!doc || !doc.body) throw new Error('The view has not loaded yet');
+    let next = 1;
+    for (const el of doc.querySelectorAll('[data-observer-ref]')) next = Math.max(next, Number(el.dataset.observerRef.slice(1)) + 1);
+    const elements = [];
+    let omittedFields = 0;
+    for (const el of doc.querySelectorAll(INTERACTIVE)) {
+      if (elements.length >= 150 || !visible(el) || el.closest(NOT_FOR_MODEL)) continue;
+      if (!el.dataset.observerRef) el.dataset.observerRef = `e${next++}`;
+      const tag = el.tagName.toLowerCase();
+      const type = tag === 'input' ? (el.type || 'text') : tag === 'button' ? (el.type === 'submit' ? 'submit' : '') : '';
+      const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      let value = ['input', 'textarea', 'select'].includes(tag) ? String(el.value || '').slice(0, 120) : '';
+      if (type === 'password') { value = value ? '(hidden)' : ''; omittedFields++; }
+      const href = tag === 'a' ? (el.getAttribute('href') || '').slice(0, 160) : '';
+      elements.push({ref: el.dataset.observerRef, role: el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'input' ? `${type} field` : tag),
+        label, type, value, href, in_form: Boolean(el.closest('form, [role=dialog], .modal'))});
+    }
+    const clone = doc.body.cloneNode(true);
+    const omittedEvents = clone.querySelectorAll('.raw-event, .json-event, td.event').length;
+    clone.querySelectorAll(NOT_FOR_MODEL).forEach(node => node.remove());
+    clone.querySelectorAll('input[type=password]').forEach(node => node.remove());
+    const text = (clone.textContent || '').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+    const path = frame.contentWindow.location.pathname + frame.contentWindow.location.search;
+    const omitted = [omittedEvents ? `${omittedEvents} raw event(s) on screen were left out` : '', omittedFields ? 'password values hidden' : ''].filter(Boolean).join('; ');
+    return {url: path, title: doc.title, text: text.slice(0, 8000), elements, omitted, login_page: /\/account\/login/.test(path),
+      summary: `${doc.title || path} · ${elements.length} elements`};
+  }
+  function highlight(el) {
+    const previous = el.style.outline;
+    el.style.outline = '3px solid #f2c94c';
+    el.style.outlineOffset = '2px';
+    el.scrollIntoView({block: 'center', inline: 'nearest'});
+    setTimeout(() => { el.style.outline = previous; }, 2500);
+  }
+  function setValue(el, text) {
+    // Set the value the way a keystroke would, so React-based Splunk pages see the change.
+    const view = el.ownerDocument.defaultView;
+    const setter = Object.getOwnPropertyDescriptor((el.tagName === 'TEXTAREA' ? view.HTMLTextAreaElement : view.HTMLInputElement).prototype, 'value').set;
+    el.focus();
+    setter.call(el, text);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  async function viewFor(component) {
+    const target = byId(component);
+    if (!target || !isWeb(target)) throw new Error(`${component} has no Splunk Web`);
+    if (focused !== component || !document.querySelector('.focus iframe')) { showScreen(component, ''); await sleep(500); }
+    const frame = document.querySelector('.focus iframe');
+    for (let i = 0; i < 40 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
+    return frame;
+  }
+  async function pageAction(action, payload) {
+    const frame = await viewFor(payload.component);
+    if (action === 'read') return snapshot(frame);
+    const el = frame.contentDocument.querySelector(`[data-observer-ref="${CSS.escape(payload.ref)}"]`);
+    if (!el || !visible(el)) throw new Error(`Element ${payload.ref} is no longer on the screen; read the screen again`);
+    highlight(el);
+    await sleep(700);
+    if (action === 'click') el.click();
+    else if (action === 'type') {
+      if (el.type === 'password') throw new Error('Password fields are for the owner only');
+      setValue(el, payload.text);
+      if (payload.press_enter) {
+        for (const type of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true}));
+      }
+    } else if (action === 'select') {
+      const option = [...el.options].find(item => item.value === payload.value || item.text.trim() === payload.value);
+      if (!option) throw new Error(`No option ${payload.value}`);
+      el.value = option.value;
+      el.dispatchEvent(new Event('change', {bubbles: true}));
+    } else throw new Error(`Unknown action ${action}`);
+    await sleep(1800);
+    for (let i = 0; i < 40 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
+    return snapshot(frame);
+  }
+  async function runPageRequest(item) {
+    if (pageRun.executed.has(item.request_id) || pageRun.paused || !assistant.run) return;
+    pageRun.executed.add(item.request_id);
+    let ok = true, result;
+    try { result = await pageAction(item.action, item.payload); } catch (error) { ok = false; result = {error: error.message, summary: error.message}; }
+    if (pageRun.tookOver) { result.owner_took_over = true; pageRun.tookOver = false; }
+    try { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/page/${item.request_id}`, {ok, result}); }
+    catch (_error) { /* another page answered first */ }
+  }
+  async function controlRun(action) {
+    pageRun.paused = action !== 'resume';
+    if (action === 'takeover') pageRun.tookOver = true;
+    try { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/control`, {action}); } catch (error) { assistant.error = error.message; }
+    if (action === 'resume') for (const item of assistant.events.values()) if (item.type === 'browser' && item.status === 'pending') runPageRequest(item);
+    fetchRun(assistant.run.id);
+  }
+
   function showScreen(component, path) {
     if (!byId(component)) return;
     if (history) history = null;
@@ -1053,8 +1161,36 @@
           h('button', {class: 'small', type: 'button', onclick: () => showScreen(item.component, item.path)}, 'Show again')),
           item.path ? h('div', {class: 'muted', style: 'overflow-wrap:anywhere'}, item.path) : null);
       }
+      case 'browser': {
+        const payload = item.payload || {};
+        const verb = {read: 'Read the screen', click: `Click ${payload.label ? `“${payload.label}”` : payload.ref}`,
+          type: `Type “${payload.text}”${payload.press_enter ? ' + Enter' : ''} into ${payload.label ? `“${payload.label}”` : payload.ref}`,
+          select: `Choose “${payload.value}” in ${payload.label ? `“${payload.label}”` : payload.ref}`}[item.action] || item.action;
+        const tone = {done: 'ok', failed: 'bad', pending: 'warn'}[item.status] || 'warn';
+        const waiting = item.status === 'pending' && pageRun.paused;
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `🖱 ${verb}`),
+          h('span', {class: `badge ${tone}`}, waiting ? 'waiting for you' : item.status), time),
+          h('div', {class: 'muted'}, `${payload.component}${payload.why ? ` · ${payload.why}` : ''}`),
+          item.summary ? h('div', {class: 'fact-source'}, item.summary) : null);
+      }
+      case 'control': return h('div', {class: 'muted'}, `${new Date(item.at).toLocaleTimeString()} · ${item.text}`);
       case 'approval': {
         const details = item.details || {};
+        if (item.kind === 'plan' || item.kind === 'checkpoint') {
+          const note = h('input', {type: 'text', placeholder: 'Optional note to Claude', 'aria-label': 'Note to Claude'});
+          const decided = item.decision !== 'pending';
+          const plan = item.kind === 'plan';
+          const outcome = {approved: plan ? 'started' : 'continued', declined: plan ? 'not started' : 'stopped here'}[item.decision] || item.decision;
+          return h('div', {class: 'step approval', role: 'group', 'aria-label': plan ? 'Walkthrough plan' : 'Walkthrough checkpoint'},
+            h('div', {class: 'row'}, h('strong', {}, plan ? `Walkthrough: ${details.goal}` : `Step done: ${details.step_done}`),
+              h('span', {class: `badge ${item.decision === 'approved' ? 'ok' : decided ? 'warn' : 'warn'}`}, decided ? outcome : 'waiting for you'), time),
+            plan ? h('ol', {}, (details.steps || []).map(step => h('li', {}, step)))
+              : h('dl', {}, h('dt', {}, 'Saw'), h('dd', {}, details.observed || '—'), h('dt', {}, 'Next'), h('dd', {}, details.next_step || 'Finished')),
+            item.note ? h('div', {class: 'muted'}, `Your note: ${item.note}`) : null,
+            decided ? null : [note, h('div', {class: 'row', style: 'margin-top:.4rem'},
+              h('button', {class: 'primary', type: 'button', onclick: () => decide(item.approval_id, 'approve', note.value)}, plan ? 'Start walkthrough' : (details.next_step ? 'Continue' : 'Finish')),
+              h('button', {class: 'danger', type: 'button', onclick: () => decide(item.approval_id, 'deny', note.value)}, plan ? 'Not now' : 'Stop here'))]);
+        }
         const note = h('input', {type: 'text', placeholder: 'Optional note to Claude', 'aria-label': 'Note to Claude'});
         const decided = item.decision !== 'pending';
         const tone = {approved: 'ok', declined: 'bad', expired: 'warn', stopped: 'warn'}[item.decision] || 'warn';
@@ -1111,6 +1247,10 @@
       parts.push(promptInput, h('div', {class: 'row'},
         h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() && !terminalRun() ? 'Send follow-up' : 'Send'),
         activeRun() ? h('button', {class: 'danger', type: 'button', onclick: async () => { await post(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/stop`); fetchRun(run.id); }}, 'Stop') : null,
+        activeRun() ? (pageRun.paused
+          ? h('button', {type: 'button', title: 'Let Claude act in the shared view again', onclick: () => controlRun('resume')}, 'Hand back to Claude')
+          : [h('button', {type: 'button', title: 'Hold Claude’s next action in the shared view', onclick: () => controlRun('pause')}, 'Pause'),
+             h('button', {type: 'button', title: 'Use the view yourself; Claude waits and is told you took over', onclick: () => controlRun('takeover')}, 'Take over')]) : null,
         h('span', {class: 'muted', style: 'font-size:.75rem;flex:1'}, '⌘/Ctrl + Enter to send'),
         h('button', {class: 'small', type: 'button', title: `Key ${status.hint || ''} from ${status.source || ''}`, onclick: () => { if (confirm('Remove the saved Anthropic API key from the lab PC?')) saveKey(''); }}, 'Remove key')));
     }

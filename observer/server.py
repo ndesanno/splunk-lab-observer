@@ -7,6 +7,7 @@ import re
 import shutil
 import ssl
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import CookieError, SimpleCookie
@@ -245,6 +246,9 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if run is None:
                 self._json(404, {"error": "unknown_run"})
             else:
+                live = assistant.runs.get(parts[1])
+                if live is not None:  # a page is watching, so the shared view can be used
+                    live.page_seen = time.time()
                 self._json(200, run.view(int(since) if since.isdigit() else 0))
         elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "messages" and post:
             body = self._read_json()
@@ -259,6 +263,24 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(error)})
                 return
             self._json(202, run.view())
+        elif len(parts) == 4 and parts[0] == "runs" and parts[2] == "page" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.runs.get(parts[1])
+            if run is None or not run.page_result(parts[3], body.get("ok"), body.get("result")):
+                self._json(409, {"error": "no_pending_request"})
+                return
+            self._json(200, {"accepted": True})
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "control" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.runs.get(parts[1])
+            if run is None or not run.control(body.get("action")):
+                self._json(409, {"error": "invalid_control"})
+                return
+            self._json(200, {"paused": run.record.get("paused", False)})
         elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "stop" and post:
             self._json(200 if assistant.stop(parts[1]) else 404, {"stopping": True})
         elif len(parts) == 4 and parts[0] == "runs" and parts[2] == "approvals" and post:
