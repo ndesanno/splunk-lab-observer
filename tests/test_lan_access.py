@@ -7,30 +7,13 @@ import tempfile
 import threading
 import unittest
 from http.client import HTTPSConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from observer.lab import Lab
 from observer.server import create_server
 from observer.setup_lan import provision_lan_credentials
-
-
-class FakeSplunkHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/redirect":
-            self.send_response(302)
-            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/en-US/")
-            self.end_headers()
-            return
-        self.server.last_cookie = self.headers.get("Cookie", "")
-        body = b"<h1>Splunk component</h1>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_args):
-        pass
+from observer.store import Store
+from tests.fakes import FakeSource, start_router
 
 
 def request(port, context, method, path, body=None, headers=None):
@@ -55,16 +38,18 @@ class LanAccessTest(unittest.TestCase):
         cls.temp.cleanup()
 
     def setUp(self):
-        self.splunk = ThreadingHTTPServer(("127.0.0.1", 0), FakeSplunkHandler)
-        self.splunk.last_cookie = ""
-        self.splunk_thread = threading.Thread(target=self.splunk.serve_forever, daemon=True)
-        self.splunk_thread.start()
+        self.splunk = start_router()
+        self.data = tempfile.TemporaryDirectory()
+        self.store = Store(self.data.name)
+        self.lab = Lab(FakeSource(), self.store)
+        self.lab.discover()
         self.observer = create_server(
             ("127.0.0.1", 0),
             f"http://127.0.0.1:{self.splunk.server_port}",
             auth_file=self.credentials["auth_file"],
             certfile=self.credentials["certfile"],
             keyfile=self.credentials["keyfile"],
+            lab=self.lab, store=self.store,
         )
         self.observer_thread = threading.Thread(target=self.observer.serve_forever, daemon=True)
         self.observer_thread.start()
@@ -74,6 +59,8 @@ class LanAccessTest(unittest.TestCase):
         self.observer.server_close()
         self.splunk.shutdown()
         self.splunk.server_close()
+        self.store.db.close()
+        self.data.cleanup()
 
     def test_https_login_gates_every_component_request(self):
         port = self.observer.server_port
@@ -81,11 +68,11 @@ class LanAccessTest(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/observer/login")
 
-        status, _headers, _body = request(port, self.context, "GET", "/en-US/")
+        status, _headers, _body = request(port, self.context, "GET", "/lab/p-sh1/en-US/")
         self.assertEqual(status, 303)
         self.assertEqual(self.splunk.last_cookie, "")
 
-        status, _headers, _body = request(port, self.context, "GET", "/observer/api/component")
+        status, _headers, _body = request(port, self.context, "GET", "/observer/api/lab")
         self.assertEqual(status, 401)
 
         status, _headers, _body = request(port, self.context, "POST", "/observer/login", body="password=wrong", headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": f"https://127.0.0.1:{port}"})
@@ -100,16 +87,16 @@ class LanAccessTest(unittest.TestCase):
 
         status, _headers, body = request(port, self.context, "GET", "/observer/", headers={"Cookie": cookie})
         self.assertEqual(status, 200)
-        self.assertIn(b"component-view", body)
+        self.assertIn(b"Splunk Lab Observer", body)
 
-        status, _headers, body = request(port, self.context, "GET", "/en-US/", headers={"Cookie": cookie + "; splunk_session=abc"})
+        status, _headers, body = request(port, self.context, "GET", "/lab/p-sh1/en-US/", headers={"Cookie": cookie + "; splunk_session=abc"})
         self.assertEqual(status, 200)
-        self.assertIn(b"Splunk component", body)
+        self.assertIn(b"Splunk Web of p-sh1", body)
         self.assertEqual(self.splunk.last_cookie, "splunk_session=abc")
 
-        status, headers, _body = request(port, self.context, "GET", "/redirect", headers={"Cookie": cookie})
-        self.assertEqual(status, 302)
-        self.assertEqual(headers["Location"], f"https://127.0.0.1:{port}/en-US/")
+        status, headers, _body = request(port, self.context, "GET", "/lab/p-sh1/", headers={"Cookie": cookie})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], f"https://127.0.0.1:{port}/lab/p-sh1/en-US/")
 
         status, _headers, _body = request(port, self.context, "POST", "/observer/logout", headers={"Cookie": cookie, "Origin": f"https://127.0.0.1:{port}"})
         self.assertEqual(status, 303)
@@ -122,7 +109,7 @@ class LanAccessTest(unittest.TestCase):
         self.assertEqual(status, 303)
         cookie = headers["Set-Cookie"].split(";", 1)[0]
 
-        status, _headers, _body = request(port, self.context, "GET", "/en-US/", headers={"Cookie": cookie, "Sec-Fetch-Site": "cross-site"})
+        status, _headers, _body = request(port, self.context, "GET", "/lab/p-sh1/en-US/", headers={"Cookie": cookie, "Sec-Fetch-Site": "cross-site"})
         self.assertEqual(status, 403)
 
     def test_lan_listener_requires_https_and_login(self):
