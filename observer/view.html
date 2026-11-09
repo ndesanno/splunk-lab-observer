@@ -81,6 +81,26 @@
     .fact-source { color: var(--muted); font-size: .75rem; }
     .notice { border: 1px solid #6d5a1d; background: #2b2410; color: var(--warn); border-radius: .4rem; padding: .5rem .7rem; font-size: .85rem; margin-bottom: .7rem; }
     @media (max-width: 900px) { .wall { grid-template-columns: minmax(0, 1fr) !important; } }
+    /* architecture */
+    .arch { position: relative; display: grid; grid-template-columns: 9rem repeat(3, minmax(13rem, 1fr)); gap: .7rem 3rem; min-width: 62rem; padding-right: 5rem; align-items: start; }
+    .arch-scroll { overflow-x: auto; padding-bottom: .5rem; }
+    .arch-head { color: var(--muted); font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .arch-site { font-weight: 600; align-self: center; }
+    .arch-site small { display: block; color: var(--muted); font-weight: 400; font-size: .75rem; }
+    .arch-cell { display: flex; flex-direction: column; gap: .45rem; align-items: stretch; position: relative; z-index: 1; padding: .2rem 0; }
+    .arch-row-line { grid-column: 1 / -1; border-top: 1px solid #1d2a3d; }
+    .cluster { border: 1px dashed #5d7898; border-radius: .55rem; padding: .35rem .45rem .45rem; background: rgba(20, 36, 60, .55); display: flex; flex-direction: column; gap: .3rem; }
+    .cluster-title { font-size: .75rem; color: #b9cbe2; font-weight: 600; }
+    .cluster-members { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .node { border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); padding: .25rem .45rem; font-size: .78rem; cursor: pointer; text-align: left; color: inherit; flex: 1 1 8rem; }
+    .node:hover { border-color: #8fb8e6; }
+    .node .node-host { display: block; color: var(--muted); font-size: .68rem; }
+    .node .badge { font-size: .62rem; margin-top: .15rem; }
+    .node.compact { flex: 1 1 6.5rem; }
+    .arch-cell > .node, .arch-cell > .cluster { flex: none; }
+    .arch-links { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: visible; }
+    .legend { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; font-size: .8rem; color: var(--muted); margin: .2rem 0 .8rem; }
+    .legend svg { vertical-align: middle; margin-right: .3rem; }
     /* assistant */
     :root { --assistant-width: min(30rem, 100vw); }
     body.with-assistant { padding-right: var(--assistant-width); }
@@ -121,6 +141,7 @@
   </header>
   <nav role="tablist">
     <button role="tab" data-tab="wall" aria-selected="true">Wall</button>
+    <button role="tab" data-tab="architecture" aria-selected="false">Architecture</button>
     <button role="tab" data-tab="overview" aria-selected="false">Overview</button>
     <button role="tab" data-tab="changes" aria-selected="false">Changes</button>
   </nav>
@@ -302,17 +323,18 @@
   // The wall stays in the page while other tabs show, and its tiles are never moved in the
   // document: moving an iframe reloads it, so order comes from CSS and only headers,
   // previews, and footers are rebuilt on refresh.
-  const panes = {wall: h('div', {}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
+  const panes = {wall: h('div', {}), architecture: h('div', {hidden: true}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
   const wallTop = h('div', {});
   const grid = h('div', {class: 'wall'});
   const tileNodes = new Map();  // component id -> {node, live}
   panes.wall.append(wallTop, grid);
-  document.getElementById('main').append(panes.wall, panes.overview, panes.changes);
+  document.getElementById('main').append(panes.wall, panes.architecture, panes.overview, panes.changes);
 
   function render() {
     for (const button of document.querySelectorAll('nav button')) button.setAttribute('aria-selected', String(button.dataset.tab === tab));
     for (const [name, pane] of Object.entries(panes)) pane.hidden = name !== tab;
     renderWall();
+    if (tab === 'architecture') { panes.architecture.replaceChildren(renderArchitecture()); requestAnimationFrame(drawArchitectureLinks); }
     if (tab === 'overview') panes.overview.replaceChildren(renderOverview());
     if (tab === 'changes') panes.changes.replaceChildren(renderChanges());
     renderFocus();
@@ -604,6 +626,155 @@
     if (event.key !== 'Escape') return;
     if (drawer) { drawer = null; render(); } else if (focused) { focused = null; render(); }
   });
+
+  // --- architecture ------------------------------------------------------------------
+  // Rows are sites, columns are tiers. Everything comes from discovery; links are drawn
+  // over the laid-out boxes once the browser has placed them.
+  const LINKS = {
+    data: {color: '#6fcf97', dash: '', label: 'Sends data to'},
+    federated: {color: '#f2c94c', dash: '7 5', label: 'Federated search'},
+    balances: {color: '#8fb8e6', dash: '', label: 'Load balances'},
+    searches: {color: '#bb9af7', dash: '2 4', label: 'Searches (cluster search head role, same site)'},
+    deploys: {color: '#a8b5c7', dash: '2 4', label: 'Deploys apps to (deployer, same site)'},
+  };
+  function tierOf(component) {
+    const roles = new Set((component.facts.server_roles || {}).value || []);
+    if (['universal_forwarder', 'data_generator'].includes(component.kind) || roles.has('heavyweight_forwarder')) return 'sources';
+    if (component.kind === 'load_balancer' || roles.has('shc_member') || roles.has('shc_captain') || roles.has('shc_deployer')) return 'search';
+    if (roles.has('search_head') && !roles.has('indexer') && !roles.has('cluster_manager')) return 'search';
+    if (component.kind === 'splunk_enterprise') return roles.has('search_head') && roles.has('indexer') ? 'search' : 'indexing';
+    return 'sources';
+  }
+  function rowOf(component) {
+    if (['observer_router', 'container'].includes(component.kind)) return 'observer';
+    return siteOf(component) || 'fleet';
+  }
+  function renderArchitecture() {
+    const wrapper = h('div', {});
+    wrapper.append(h('p', {class: 'muted'}, 'Drawn from discovery (', stamp(lab.checked_at), '): Splunk roles and clusters from each splunkd, load balancer backends from HAProxy, forwarder outputs from btool, and federated providers from the HQ search heads. Click a box for its details and history.'));
+    wrapper.append(h('div', {class: 'legend'}, Object.values(LINKS).map(link => h('span', {},
+      svgLine(link), link.label))));
+    const rows = [];
+    const order = ['hq', 'alpha', 'bravo', 'mgmt'];
+    const seen = new Set(lab.components.map(rowOf));
+    for (const key of [...order.filter(key => seen.has(key)), ...[...seen].filter(key => !order.includes(key) && !['fleet', 'observer'].includes(key)).sort(), 'fleet', 'observer']) {
+      if (seen.has(key)) rows.push(key);
+    }
+    const rowTitle = key => key === 'fleet' ? ['Forwarder fleet', 'Shared, one per Splunk version'] : key === 'observer' ? ['Observer', 'This interface'] :
+      [siteName(key), {hq: 'Headquarters site', alpha: 'Spoke site', bravo: 'Spoke site', mgmt: 'Management'}[key] || 'Site'];
+    const grid = h('div', {class: 'arch'});
+    grid.append(h('div', {}), ...['Data sources', 'Indexing', 'Search'].map(text => h('div', {class: 'arch-head'}, text)));
+    const groupedIds = new Set(lab.groups.flatMap(group => group.members));
+    for (const key of rows) {
+      const members = lab.components.filter(component => rowOf(component) === key);
+      const [title, subtitle] = rowTitle(key);
+      grid.append(h('div', {class: 'arch-row-line'}), h('div', {class: 'arch-site'}, title, h('small', {}, subtitle)));
+      for (const tier of ['sources', 'indexing', 'search']) {
+        const cell = h('div', {class: 'arch-cell'});
+        const inTier = members.filter(component => tierOf(component) === tier);
+        for (const group of lab.groups) {
+          const groupMembers = group.members.filter(id => byId(id) && inTier.some(component => component.id === id));
+          if (!groupMembers.length) continue;
+          const ordered = [...groupMembers].sort((a, b) => (a === group.manager ? -1 : b === group.manager ? 1 : a.localeCompare(b)));
+          cell.append(h('div', {class: 'cluster', 'data-group': group.id}, h('div', {class: 'cluster-title'}, groupName(group)),
+            h('div', {class: 'cluster-members'}, ordered.map(id => archNode(byId(id), true)))));
+        }
+        const loose = inTier.filter(component => !groupedIds.has(component.id))
+          .sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id, undefined, {numeric: true}));
+        if (key === 'fleet' && loose.length > 3) cell.append(h('div', {class: 'cluster-members'}, loose.map(component => archNode(component, true))));
+        else loose.forEach(component => cell.append(archNode(component, false)));
+        grid.append(cell);
+      }
+    }
+    const links = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    links.setAttribute('class', 'arch-links');
+    grid.append(links);
+    wrapper.append(h('div', {class: 'arch-scroll'}, grid));
+    return wrapper;
+  }
+  function svgLine(link) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '28'); svg.setAttribute('height', '8');
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    Object.entries({x1: 1, y1: 4, x2: 27, y2: 4, stroke: link.color, 'stroke-width': 2, 'stroke-dasharray': link.dash}).forEach(([k, v]) => line.setAttribute(k, v));
+    svg.append(line);
+    return svg;
+  }
+  function archNode(component, compact) {
+    return h('button', {class: `node${compact ? ' compact' : ''}`, type: 'button', 'data-node': component.id, title: `${plainName(component)} (${component.id})`,
+      onclick: () => openDrawer(component.id)},
+      component.owner_name || plainName(component, true), h('span', {class: 'node-host'}, component.id), stateBadge(component));
+  }
+  // Links between boxes: one line per pair of drawn boxes, so a forwarder sending to every
+  // member of a cluster gets a single line to the cluster.
+  function architectureLinks() {
+    const boxFor = id => {
+      const group = lab.groups.find(item => item.members.includes(id) && (item.type === 'search_head_cluster' || id !== item.manager));
+      return group ? `group:${group.id}` : `node:${id}`;
+    };
+    const links = new Map();
+    const add = (from, to, type) => { if (from !== to) links.set(`${from}|${to}|${type}`, {from, to, type}); };
+    for (const rel of lab.relationships) {
+      if (rel.type === 'sends data to') add(`node:${rel.from}`, boxFor(rel.to), 'data');
+      else if (rel.type === 'discovers indexers through') {
+        const cluster = lab.groups.find(group => group.manager === rel.to);
+        add(`node:${rel.from}`, cluster ? `group:${cluster.id}` : `node:${rel.to}`, 'data');
+      } else if (rel.type === 'federated search provider') add(boxFor(rel.from), boxFor(rel.to), 'federated');
+      else if (rel.type === 'load balances') add(`node:${rel.from}`, boxFor(rel.to), 'balances');
+    }
+    for (const shc of lab.groups.filter(group => group.type === 'search_head_cluster')) {
+      const searchesCluster = shc.members.some(id => ((byId(id) || {facts: {}}).facts.server_roles || {value: []}).value.includes('cluster_search_head'));
+      const indexers = lab.groups.find(group => group.type === 'indexer_cluster' && group.label === shc.label);
+      if (searchesCluster && indexers) add(`group:${shc.id}`, `group:${indexers.id}`, 'searches');
+      const deployer = lab.components.find(component => ((component.facts.server_roles || {}).value || []).includes('shc_deployer') && siteOf(component) === shc.label);
+      if (deployer) add(`node:${deployer.id}`, `group:${shc.id}`, 'deploys');
+    }
+    return [...links.values()];
+  }
+  function drawArchitectureLinks() {
+    const grid = panes.architecture.querySelector('.arch');
+    const svg = grid && grid.querySelector('.arch-links');
+    if (!svg || panes.architecture.hidden) return;
+    const origin = grid.getBoundingClientRect();
+    svg.setAttribute('width', origin.width); svg.setAttribute('height', origin.height);
+    svg.replaceChildren();
+    const find = key => key.startsWith('group:') ? grid.querySelector(`[data-group="${CSS.escape(key.slice(6))}"]`) : grid.querySelector(`[data-node="${CSS.escape(key.slice(5))}"]`);
+    for (const link of architectureLinks()) {
+      const from = find(link.from), to = find(link.to);
+      if (!from || !to) continue;
+      const a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
+      const style = LINKS[link.type];
+      let x1, y1, x2, y2, c1, c2;
+      if (Math.abs((a.left + a.right) / 2 - (b.left + b.right) / 2) < 40) {
+        // Same column: leave from the bottom or top and arc out to the side.
+        const down = b.top > a.top;
+        x1 = a.right - origin.left; y1 = (down ? a.bottom : a.top) - origin.top - (down ? 6 : -6);
+        x2 = b.right - origin.left; y2 = (down ? b.top : b.bottom) - origin.top + (down ? 6 : -6);
+        const bulge = Math.max(x1, x2) + 30 + Math.min(60, Math.abs(y2 - y1) / 6);
+        c1 = `${bulge} ${y1}`; c2 = `${bulge} ${y2}`;
+      } else {
+        const rightward = b.left > a.left;
+        x1 = (rightward ? a.right : a.left) - origin.left; y1 = (a.top + a.bottom) / 2 - origin.top;
+        x2 = (rightward ? b.left : b.right) - origin.left; y2 = (b.top + b.bottom) / 2 - origin.top;
+        const pull = Math.max(30, Math.abs(x2 - x1) / 2);
+        c1 = `${x1 + (rightward ? pull : -pull)} ${y1}`; c2 = `${x2 + (rightward ? -pull : pull)} ${y2}`;
+      }
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      Object.entries({d: `M ${x1} ${y1} C ${c1}, ${c2}, ${x2} ${y2}`, fill: 'none', stroke: style.color, 'stroke-width': 1.6,
+        'stroke-dasharray': style.dash, opacity: .85, 'marker-end': `url(#arrow-${link.type})`}).forEach(([k, v]) => path.setAttribute(k, v));
+      svg.append(path);
+    }
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    for (const [type, style] of Object.entries(LINKS)) {
+      const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+      Object.entries({id: `arrow-${type}`, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse'}).forEach(([k, v]) => marker.setAttribute(k, v));
+      const tip = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      tip.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z'); tip.setAttribute('fill', style.color);
+      marker.append(tip); defs.append(marker);
+    }
+    svg.prepend(defs);
+  }
+  new ResizeObserver(() => requestAnimationFrame(drawArchitectureLinks)).observe(panes.architecture);
 
   // --- overview ----------------------------------------------------------------------
   function renderOverview() {
