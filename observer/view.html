@@ -79,12 +79,39 @@
     .fact-source { color: var(--muted); font-size: .75rem; }
     .notice { border: 1px solid #6d5a1d; background: #2b2410; color: var(--warn); border-radius: .4rem; padding: .5rem .7rem; font-size: .85rem; margin-bottom: .7rem; }
     @media (max-width: 900px) { .wall { grid-template-columns: minmax(0, 1fr) !important; } }
+    /* assistant */
+    :root { --assistant-width: min(30rem, 100vw); }
+    body.with-assistant { padding-right: var(--assistant-width); }
+    body.with-assistant .focus { right: var(--assistant-width); }
+    .assistant { position: fixed; top: 0; right: 0; bottom: 0; width: var(--assistant-width); z-index: 25; background: #0e1828; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+    .assistant-head { padding: .6rem .8rem; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: .4rem; }
+    .assistant-head select { max-width: 100%; }
+    .trail { flex: 1; min-height: 0; overflow: auto; padding: .7rem .8rem; display: flex; flex-direction: column; gap: .5rem; font-size: .88rem; }
+    .step { border-radius: .45rem; padding: .45rem .6rem; background: #111c2e; border: 1px solid #243246; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .step.you { background: #1d3150; border-color: #33557f; align-self: flex-end; max-width: 90%; }
+    .step.claude { background: transparent; border: 0; padding: .1rem .1rem; }
+    .step.tool, .step.display { font-size: .8rem; white-space: normal; }
+    .step.display { border-color: #3d5f8a; background: #10213a; }
+    .step.error { border-color: #7b3b3b; background: #2a1414; color: var(--bad); }
+    .step.approval { border: 1px solid #a1842c; background: #2b2410; white-space: normal; }
+    .step.approval dl { margin: .3rem 0; display: grid; grid-template-columns: max-content 1fr; gap: .15rem .6rem; }
+    .step.approval dt { color: var(--muted); }
+    .step.approval dd { margin: 0; }
+    .step details summary { cursor: pointer; color: var(--muted); }
+    .step pre { white-space: pre-wrap; max-height: 16rem; overflow: auto; background: #070c16; padding: .4rem; border-radius: .3rem; font-size: .72rem; margin: .3rem 0 0; }
+    .thinking { color: var(--muted); font-size: .8rem; }
+    .composer { border-top: 1px solid var(--line); padding: .6rem .8rem; display: flex; flex-direction: column; gap: .4rem; }
+    .composer textarea, .assistant input[type=password], .assistant input[type=text] { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .45rem; }
+    button.primary { background: #2f5d8f; border-color: #8fb8e6; }
+    button.danger { background: #5c2626; border-color: #b05a5a; }
+    @media (max-width: 900px) { body.with-assistant { padding-right: 0; } }
   </style>
 </head>
 <body>
   <header>
     <div><h1>Splunk Lab Observer</h1><div class="subtitle" id="summary">Loading the lab…</div></div>
     <div class="row">
+      <button id="assistant-toggle" type="button" title="Ask Claude about the lab and watch it work here">Ask Claude</button>
       <button id="discover" type="button" title="Discover components and relationships now">Discover now</button>
       <button id="capture" type="button" title="Take new screen previews of every Splunk Web">Capture previews</button>
       <form id="logout" method="post" action="/observer/logout" hidden><button type="submit">Sign out</button></form>
@@ -623,6 +650,220 @@
     if (kind === 'capture') return value.file ? `screenshot of ${value.page || 'page'}` : 'capture failed';
     return JSON.stringify(value);
   }
+
+  // --- assistant ---------------------------------------------------------------------
+  // Claude works on the server; this panel shows each step as it happens. A show_screen step
+  // opens that component's view here, and a change waits for an approval card below.
+  const assistant = {open: false, status: null, runs: [], run: null, events: new Map(), rev: 0, timer: null, shown: new Set(), error: null, busy: false};
+  const assistantNode = h('aside', {class: 'assistant', 'aria-label': 'Claude assistant', hidden: true});
+  const assistantHead = h('div', {class: 'assistant-head'});
+  const trail = h('div', {class: 'trail', 'aria-live': 'polite'});
+  const composer = h('div', {class: 'composer'});
+  const promptInput = h('textarea', {rows: 3, placeholder: 'Ask about the lab, or ask Claude to do something in it…', 'aria-label': 'Prompt for Claude'});
+  promptInput.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); sendPrompt(); } });
+  assistantNode.append(assistantHead, trail, composer);
+  document.body.append(assistantNode);
+  const activeRun = () => assistant.run && ['running', 'waiting_for_approval'].includes(assistant.run.status);
+
+  function setAssistantOpen(open) {
+    assistant.open = open;
+    assistantNode.hidden = !open;
+    document.body.classList.toggle('with-assistant', open);
+    document.getElementById('assistant-toggle').setAttribute('aria-pressed', String(open));
+    try { localStorage.setItem('assistant-open', open ? '1' : ''); } catch (_error) { /* storage unavailable */ }
+    if (open) loadAssistant();
+    requestAnimationFrame(layoutFrames);
+  }
+  async function loadAssistant() {
+    try {
+      const result = await api('/observer/api/assistant');
+      assistant.status = result.status;
+      assistant.runs = result.runs;
+      assistant.error = null;
+      if (!assistant.run && result.runs.length) await selectRun(result.runs[0].id);
+    } catch (error) { assistant.error = error.message; }
+    renderAssistant();
+  }
+  async function selectRun(id) {
+    clearTimeout(assistant.timer);
+    assistant.run = null; assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set();
+    if (id) await fetchRun(id, true);
+    renderAssistant();
+  }
+  async function fetchRun(id, initial) {
+    clearTimeout(assistant.timer);
+    let result;
+    try { result = await api(`/observer/api/assistant/runs/${encodeURIComponent(id)}?since=${assistant.rev}`); }
+    catch (error) { assistant.error = error.message; renderAssistant(); assistant.timer = setTimeout(() => fetchRun(id), 3000); return; }
+    if (assistant.run && assistant.run.id !== id) return;  // another run was selected meanwhile
+    for (const item of result.events) {
+      const previous = assistant.events.get(item.seq);
+      assistant.events.set(item.seq, item);
+      assistant.rev = Math.max(assistant.rev, item.rev);
+      if (item.type === 'display' && !assistant.shown.has(item.seq)) {
+        assistant.shown.add(item.seq);
+        if (!initial) showScreen(item.component, item.path);
+      }
+      if (item.type === 'tool' && item.name === 'container_action' && item.status === 'ok' && previous && previous.status !== 'ok') {
+        refresh(); setTimeout(refresh, 20000); setTimeout(refresh, 70000);
+      }
+      if (item.type === 'approval' && item.decision === 'pending' && !assistant.open) setAssistantOpen(true);
+    }
+    const wasActive = activeRun();
+    assistant.run = Object.assign({}, result, {events: undefined});
+    renderAssistant();
+    if (activeRun()) assistant.timer = setTimeout(() => fetchRun(id), 1000);
+    else if (wasActive) { refresh(); loadAssistant(); }
+  }
+  function showScreen(component, path) {
+    if (!byId(component)) return;
+    if (history) history = null;
+    tab = 'wall';
+    focused = component;
+    render();
+    const frame = document.querySelector('.focus iframe');
+    if (frame && path) {
+      frame.dataset.screen = path;
+      frame.src = byId(component).web_path.replace(/\/$/, '') + path;
+    }
+  }
+  async function sendPrompt() {
+    const text = promptInput.value.trim();
+    if (!text || assistant.busy) return;
+    assistant.busy = true; assistant.error = null; renderAssistant();
+    try {
+      const continuing = assistant.run && !activeRun();
+      const result = continuing
+        ? await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/messages`, {prompt: text})
+        : await postWithReason('/observer/api/assistant/runs', {prompt: text});
+      promptInput.value = '';
+      if (!continuing) { assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set(); }
+      assistant.run = Object.assign({}, result, {events: undefined});
+      await fetchRun(result.id);
+      loadAssistantRuns();
+    } catch (error) {
+      assistant.error = await errorText(error);
+    } finally { assistant.busy = false; renderAssistant(); }
+  }
+  async function loadAssistantRuns() {
+    try { assistant.runs = (await api('/observer/api/assistant')).runs; renderAssistant(); } catch (_error) { /* next poll */ }
+  }
+  // POST helpers throw on non-2xx; read the server's reason when it gave one.
+  async function errorText(error) { return error.reason || error.message; }
+  async function postWithReason(path, body) {
+    const response = await fetch(path, {method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = new Error(value.error || `HTTP ${response.status}`); error.reason = value.error; throw error; }
+    return value;
+  }
+  async function decide(approvalId, decision, note) {
+    try { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/approvals/${approvalId}`, {decision, note}); }
+    catch (error) { assistant.error = await errorText(error); }
+    fetchRun(assistant.run.id);
+  }
+  async function saveKey(value) {
+    try { assistant.status = (await postWithReason('/observer/api/assistant/key', {api_key: value})).status; assistant.error = null; }
+    catch (error) { assistant.error = await errorText(error); }
+    renderAssistant();
+  }
+
+  function richText(text) {
+    // Bold and inline code only; everything else stays plain text.
+    return text.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/).map(part =>
+      part.startsWith('**') && part.endsWith('**') && part.length > 4 ? h('strong', {}, part.slice(2, -2)) :
+      part.startsWith('`') && part.endsWith('`') && part.length > 2 ? h('code', {}, part.slice(1, -1)) : part);
+  }
+  function toolSummary(item) {
+    const input = item.input || {};
+    return Object.entries(input).filter(([key, value]) => value !== '' && !['reason', 'expected_effect', 'cleanup'].includes(key))
+      .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`).join(' · ');
+  }
+  function stepNode(item) {
+    const time = h('span', {class: 'muted', style: 'font-size:.72rem'}, new Date(item.at).toLocaleTimeString());
+    switch (item.type) {
+      case 'prompt': return h('div', {class: 'step you'}, item.text);
+      case 'text': return h('div', {class: 'step claude'}, richText(item.text));
+      case 'thinking': return h('details', {class: 'thinking'}, h('summary', {}, 'Claude’s reasoning (summary)'), h('div', {style: 'white-space:pre-wrap'}, item.text));
+      case 'tool': {
+        const tone = {ok: 'ok', error: 'bad', running: 'warn'}[item.status] || '';
+        return h('div', {class: 'step tool'},
+          h('div', {class: 'row'}, h('strong', {}, item.name), h('span', {class: `badge ${tone}`}, item.status === 'running' ? 'running…' : item.status), time,
+            item.seconds !== undefined ? h('span', {class: 'muted', style: 'font-size:.72rem'}, `${item.seconds}s`) : null),
+          toolSummary(item) ? h('div', {class: 'muted', style: 'overflow-wrap:anywhere'}, toolSummary(item)) : null,
+          h('div', {class: 'fact-source'}, item.source),
+          item.result !== undefined ? h('details', {}, h('summary', {}, item.status === 'error' ? 'Error sent to Claude' : 'Evidence sent to Claude'), h('pre', {}, item.result)) : null);
+      }
+      case 'display': {
+        const component = byId(item.component);
+        return h('div', {class: 'step display'}, h('div', {class: 'row'}, '👁 Showing ', h('strong', {}, component ? displayName(component) : item.component), time,
+          h('button', {class: 'small', type: 'button', onclick: () => showScreen(item.component, item.path)}, 'Show again')),
+          item.path ? h('div', {class: 'muted', style: 'overflow-wrap:anywhere'}, item.path) : null);
+      }
+      case 'approval': {
+        const details = item.details || {};
+        const note = h('input', {type: 'text', placeholder: 'Optional note to Claude', 'aria-label': 'Note to Claude'});
+        const decided = item.decision !== 'pending';
+        const tone = {approved: 'ok', declined: 'bad', expired: 'warn', stopped: 'warn'}[item.decision] || 'warn';
+        return h('div', {class: 'step approval', role: 'group', 'aria-label': 'Approval request'},
+          h('div', {class: 'row'}, h('strong', {}, decided ? 'Change request' : 'Claude asks to change the lab'), h('span', {class: `badge ${tone}`}, item.decision), time),
+          h('dl', {}, h('dt', {}, 'Action'), h('dd', {}, h('code', {}, item.action)),
+            h('dt', {}, 'Reason'), h('dd', {}, details.reason || '—'),
+            h('dt', {}, 'Expected effect'), h('dd', {}, details.expected_effect || '—'),
+            h('dt', {}, 'Cleanup'), h('dd', {}, details.cleanup || '—'),
+            item.note ? [h('dt', {}, 'Your note'), h('dd', {}, item.note)] : null),
+          decided ? null : [note, h('div', {class: 'row', style: 'margin-top:.4rem'},
+            h('button', {class: 'primary', type: 'button', onclick: () => decide(item.approval_id, 'approve', note.value)}, 'Approve'),
+            h('button', {class: 'danger', type: 'button', onclick: () => decide(item.approval_id, 'deny', note.value)}, 'Decline'))]);
+      }
+      case 'summary': return h('div', {class: 'step'}, h('strong', {}, 'Changes made in this run'),
+        h('ul', {}, item.changes.map(change => h('li', {}, `${change.at}: podman ${change.action} ${change.component} (${change.before} → ${change.after}); cleanup: ${change.cleanup}`))),
+        item.unresolved.length ? h('div', {class: 'notice'}, 'Not yet restored: ', item.unresolved.join('; ')) : h('div', {class: 'muted'}, 'Nothing is left stopped.'));
+      case 'error': return h('div', {class: 'step error'}, item.text);
+      case 'note': return h('div', {class: 'muted'}, item.text);
+      default: return null;
+    }
+  }
+  function renderAssistant() {
+    if (!assistant.open) return;
+    const status = assistant.status;
+    const run = assistant.run;
+    const usage = [...assistant.events.values()].filter(item => item.type === 'usage');
+    const tokens = usage.reduce((sum, item) => [sum[0] + (item.input_tokens || 0), sum[1] + (item.output_tokens || 0)], [0, 0]);
+    const runPicker = h('select', {'aria-label': 'Conversation', onchange: event => selectRun(event.target.value || null)},
+      h('option', {value: '', selected: !run}, 'New conversation'),
+      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
+    assistantHead.replaceChildren(
+      h('div', {class: 'row'}, h('strong', {style: 'flex:1'}, 'Claude'),
+        status ? h('span', {class: 'muted', style: 'font-size:.75rem'}, `${status.model} · effort ${status.effort}`) : null,
+        h('button', {class: 'small', type: 'button', onclick: () => setAssistantOpen(false)}, 'Close')),
+      runPicker,
+      h('div', {class: 'muted', style: 'font-size:.75rem'},
+        status ? `Reads the lab as ${status.read_account || 'the observer account'}; container start, stop, and restart wait for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
+        run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
+    const nearBottom = trail.scrollHeight - trail.scrollTop - trail.clientHeight < 80;
+    const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(stepNode).filter(Boolean);
+    if (activeRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, 'Claude is working…'));
+    if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is p-hq-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
+    trail.replaceChildren(...steps);
+    if (nearBottom) trail.scrollTop = trail.scrollHeight;
+    const parts = [];
+    if (assistant.error) parts.push(h('div', {class: 'notice'}, assistant.error));
+    if (status && !status.sdk_available) parts.push(h('div', {class: 'notice'}, 'The anthropic Python package is not installed for this observer. Start it with the project’s .venv/bin/python.'));
+    if (status && !status.configured) {
+      const keyInput = h('input', {type: 'password', placeholder: 'sk-ant-…', autocomplete: 'off', 'aria-label': 'Anthropic API key'});
+      parts.push(h('div', {}, h('div', {class: 'muted', style: 'margin-bottom:.3rem'}, 'Add an Anthropic API key (console.anthropic.com → API keys). It is saved only on the lab PC in a file only you can read, and never shown again.'),
+        keyInput, h('div', {class: 'row', style: 'margin-top:.4rem'}, h('button', {class: 'primary', type: 'button', onclick: () => saveKey(keyInput.value)}, 'Save key'))));
+    } else if (status) {
+      parts.push(promptInput, h('div', {class: 'row'},
+        h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() ? 'Send follow-up' : 'Send'),
+        activeRun() ? h('button', {class: 'danger', type: 'button', onclick: async () => { await post(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/stop`); fetchRun(run.id); }}, 'Stop') : null,
+        h('span', {class: 'muted', style: 'font-size:.75rem;flex:1'}, '⌘/Ctrl + Enter to send'),
+        h('button', {class: 'small', type: 'button', title: `Key ${status.hint || ''} from ${status.source || ''}`, onclick: () => { if (confirm('Remove the saved Anthropic API key from the lab PC?')) saveKey(''); }}, 'Remove key')));
+    }
+    composer.replaceChildren(...parts);
+  }
+  document.getElementById('assistant-toggle').addEventListener('click', () => setAssistantOpen(!assistant.open));
+  try { if (localStorage.getItem('assistant-open')) setAssistantOpen(true); } catch (_error) { /* storage unavailable */ }
 
   // --- wiring -------------------------------------------------------------------------
   for (const button of document.querySelectorAll('nav button')) button.addEventListener('click', () => { tab = button.dataset.tab; render(); });

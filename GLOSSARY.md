@@ -33,3 +33,9 @@ A bounded guided walkthrough, test, or investigation with recorded steps, observ
 
 **Fixture**:
 Disposable lab data or configuration created to exercise behavior during a test run.
+
+**Approval**:
+The owner's decision on one state-changing step an AI asks to take, shown with its reason, expected effect, and cleanup. Without it the step does not run.
+
+**Model-bound evidence**:
+The exact text a tool returned to the hosted AI model during a run, kept with the step so the owner can see everything that left the workstation.

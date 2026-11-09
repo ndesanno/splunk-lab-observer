@@ -39,6 +39,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS signals (
                     component TEXT NOT NULL, signal TEXT NOT NULL, value TEXT, PRIMARY KEY (component, signal));
                 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY, created_at TEXT NOT NULL, epoch REAL NOT NULL, updated_at TEXT NOT NULL,
+                    status TEXT NOT NULL, title TEXT NOT NULL, record TEXT NOT NULL);
             """)
 
     def record(self, component, kind, source, value, signals=None, observed_at=None):
@@ -123,6 +126,26 @@ class Store:
         with self.lock, self.db:
             self.db.execute("DELETE FROM observations WHERE epoch < ?", (cutoff,))
             self.db.execute("DELETE FROM changes WHERE epoch < ?", (cutoff,))
+            self.db.execute("DELETE FROM runs WHERE epoch < ?", (cutoff,))
+
+    def save_run(self, record):
+        """One assistant run: its prompt, every step and the evidence sent to the model."""
+        epoch = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00")).timestamp()
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO runs (id, created_at, epoch, updated_at, status, title, record) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (record["id"], record["created_at"], epoch, utc_now(), record["status"], record["title"], json.dumps(record)))
+
+    def run(self, run_id):
+        with self.lock:
+            row = self.db.execute("SELECT record FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return json.loads(row["record"]) if row else None
+
+    def runs(self, limit=30):
+        with self.lock:
+            rows = self.db.execute("SELECT id, created_at, updated_at, status, title FROM runs ORDER BY epoch DESC LIMIT ?",
+                                   (limit,)).fetchall()
+        return [dict(row) for row in rows]
 
     def get_setting(self, name, default=None):
         with self.lock:

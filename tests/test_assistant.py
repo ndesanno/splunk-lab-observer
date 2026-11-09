@@ -1,0 +1,245 @@
+"""Claude runs against a fake Messages API: audited tools, shown screens, and approval-gated changes."""
+
+import json
+import os
+import stat
+import tempfile
+import threading
+import time
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from observer import assistant as assistant_module
+from observer.assistant import Assistant
+from observer.lab import Lab
+from observer.server import create_server
+from observer.store import Store
+from tests.fakes import FakeSource, start, start_router
+from tests.test_discovery_and_history import call
+
+KEY = "sk-ant-test-key-0000000000000000"
+
+
+def message(content, stop_reason):
+    return {"id": f"msg_{time.time_ns()}", "type": "message", "role": "assistant", "model": assistant_module.MODEL,
+            "content": content, "stop_reason": stop_reason, "stop_sequence": None,
+            "usage": {"input_tokens": 100, "output_tokens": 20}}
+
+
+def tool_use(tool_id, name, arguments):
+    return {"type": "tool_use", "id": tool_id, "name": name, "input": arguments}
+
+
+class FakeMessagesApi(BaseHTTPRequestHandler):
+    """Answers POST /v1/messages from a script and keeps every request body it was sent."""
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.requests.append({"headers": dict(self.headers), "body": body})
+        reply = json.dumps(self.server.script.pop(0)).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *_args):
+        pass
+
+
+@unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")
+class AssistantRunTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(self.temp.name)
+        self.source = FakeSource()
+        self.lab = Lab(self.source, self.store)
+        self.lab.discover()
+        self.api = ThreadingHTTPServer(("127.0.0.1", 0), FakeMessagesApi)
+        self.api.requests, self.api.script = [], []
+        start(self.api)
+        self.saved_base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{self.api.server_port}"
+        self.assistant = Assistant(self.lab, self.store, self.temp.name)
+        self.assistant.key.save(KEY)
+
+    def tearDown(self):
+        if self.saved_base_url is None:
+            os.environ.pop("ANTHROPIC_BASE_URL", None)
+        else:
+            os.environ["ANTHROPIC_BASE_URL"] = self.saved_base_url
+        self.api.shutdown()
+        self.api.server_close()
+        self.store.db.close()
+        self.temp.cleanup()
+
+    def wait(self, run, predicate, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate(run):
+                return
+            time.sleep(0.05)
+        self.fail(f"timed out; events: {json.dumps(run.record['events'], indent=1)[:3000]}")
+
+    def finished(self, run):
+        return run.record["status"] in {"done", "failed", "stopped"}
+
+    def test_read_only_run_records_evidence_shows_screens_and_keeps_raw_events_local(self):
+        self.api.script = [
+            message([{"type": "text", "text": "Opening Hindsight."},
+                     tool_use("t1", "show_screen", {"component": "p-sh1", "path": "/en-US/app/TA-hindsight/hindsight_overview"}),
+                     tool_use("t2", "run_search", {"component": "p-sh1", "query": "index=_internal ERROR"}),
+                     tool_use("t3", "run_search", {"component": "p-sh1", "query": "index=_internal ERROR | stats count by component"}),
+                     tool_use("t4", "splunk_rest_get", {"component": "p-sh1", "path": "/services/storage/passwords"}),
+                     tool_use("t5", "container_logs", {"component": "p-uf"})], "tool_use"),
+            message([{"type": "text", "text": "TailReader logged 3 errors (run_search on p-sh1)."}], "end_turn"),
+        ]
+        run = self.assistant.start("What is failing on p-sh1?")
+        self.wait(run, self.finished)
+        self.assertEqual(run.record["status"], "done")
+
+        first = self.api.requests[0]["body"]
+        self.assertEqual(first["model"], "claude-opus-5-5")
+        self.assertEqual(first["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(first["output_config"], {"effort": "medium"})
+        self.assertEqual(first["fallbacks"], "default")
+        self.assertIn("server-side-fallback-2026-07-01", self.api.requests[0]["headers"].get("anthropic-beta", ""))
+        self.assertNotIn("tool_choice", first)
+
+        # All five results return together in one user message, in call order.
+        results = self.api.requests[1]["body"]["messages"][-1]
+        self.assertEqual(results["role"], "user")
+        self.assertEqual([item["tool_use_id"] for item in results["content"]], ["t1", "t2", "t3", "t4", "t5"])
+        by_id = {item["tool_use_id"]: item for item in results["content"]}
+        self.assertTrue(by_id["t2"].get("is_error"))
+        self.assertTrue(by_id["t4"].get("is_error"))
+        self.assertFalse(by_id["t3"].get("is_error"))
+        self.assertEqual(self.source.searches, ["search index=_internal ERROR | stats count by component"])
+
+        sent = json.dumps([request["body"] for request in self.api.requests])
+        self.assertNotIn("raw event text", sent)
+        self.assertNotIn("hunter2", sent)
+        self.assertNotIn(KEY, sent)
+
+        events = run.record["events"]
+        display = [item for item in events if item["type"] == "display"]
+        self.assertEqual(display[0]["component"], "p-sh1")
+        self.assertEqual(display[0]["path"], "/en-US/app/TA-hindsight/hindsight_overview")
+        tools = [item for item in events if item["type"] == "tool"]
+        self.assertEqual([item["status"] for item in tools], ["ok", "error", "ok", "error", "ok"])
+        search = tools[2]
+        self.assertEqual(search["source"], "splunkd p-sh1 oneshot search as lab_observer")
+        self.assertIn("TailReader", search["result"])  # the evidence the owner can inspect is what was sent
+        self.assertIn(search["result"], sent.replace('\\"', '"'))
+        self.assertEqual(run.record["accounts"], ["lab_observer"])
+        self.assertEqual(self.store.run(run.id)["status"], "done")
+
+    def test_a_change_waits_for_approval_and_an_unrestored_stop_is_reported(self):
+        self.api.script = [
+            message([tool_use("t1", "container_action", {"component": "p-idx1", "action": "stop", "reason": "Test failover",
+                                                         "expected_effect": "p-idx1 goes down", "cleanup": "start p-idx1"})], "tool_use"),
+            message([{"type": "text", "text": "p-idx1 is stopped."}], "end_turn"),
+        ]
+        run = self.assistant.start("Stop p-idx1 to test failover")
+        self.wait(run, lambda item: item.record["status"] == "waiting_for_approval")
+        state = lambda: next(item["state"] for item in self.source.container_list if item["name"] == "p-idx1")
+        self.assertEqual(state(), "running")  # nothing happens before the owner decides
+        approval = next(item for item in run.record["events"] if item["type"] == "approval")
+        self.assertEqual(approval["details"]["cleanup"], "start p-idx1")
+        self.assertFalse(run.decide(approval["approval_id"], "maybe"))
+        self.assertTrue(run.decide(approval["approval_id"], "approve"))
+        self.wait(run, self.finished)
+        self.assertEqual(state(), "exited")
+        summary = next(item for item in run.record["events"] if item["type"] == "summary")
+        self.assertEqual(summary["changes"][0]["before"], "running")
+        self.assertEqual(summary["changes"][0]["after"], "exited")
+        self.assertIn("p-idx1 is still stopped", summary["unresolved"][0])
+        self.assertEqual(self.store.latest("p-idx1", "assistant_action")["value"]["action"], "stop")
+
+    def test_a_declined_change_is_not_made_and_claude_hears_why(self):
+        self.api.script = [
+            message([tool_use("t1", "container_action", {"component": "p-cm", "action": "restart", "reason": "r",
+                                                         "expected_effect": "e", "cleanup": "none needed"})], "tool_use"),
+            message([{"type": "text", "text": "Understood."}], "end_turn"),
+        ]
+        run = self.assistant.start("Restart the manager")
+        self.wait(run, lambda item: item.record["status"] == "waiting_for_approval")
+        approval = next(item for item in run.record["events"] if item["type"] == "approval")
+        run.decide(approval["approval_id"], "deny", "Not during the test")
+        self.wait(run, self.finished)
+        result = self.api.requests[1]["body"]["messages"][-1]["content"][0]
+        self.assertTrue(result["is_error"])
+        self.assertIn("declined", json.dumps(result["content"]))
+        self.assertIn("Not during the test", json.dumps(result["content"]))
+        self.assertFalse(self.store.latest("p-cm", "assistant_action"))
+
+    def test_stop_ends_a_run_waiting_for_approval_without_the_change(self):
+        self.api.script = [message([tool_use("t1", "container_action", {"component": "p-sh2", "action": "stop", "reason": "r",
+                                                                        "expected_effect": "e", "cleanup": "start"})], "tool_use")]
+        run = self.assistant.start("Stop p-sh2")
+        self.wait(run, lambda item: item.record["status"] == "waiting_for_approval")
+        self.assistant.stop(run.id)
+        self.wait(run, self.finished)
+        self.assertEqual(run.record["status"], "stopped")
+        self.assertEqual(len(self.api.requests), 1)
+        self.assertEqual(next(item for item in run.record["events"] if item["type"] == "approval")["decision"], "stopped")
+
+    def test_a_follow_up_continues_the_same_conversation(self):
+        self.api.script = [message([{"type": "text", "text": "Six components."}], "end_turn"),
+                           message([{"type": "text", "text": "p-cm manages p-idx1."}], "end_turn")]
+        run = self.assistant.start("How many components?")
+        self.wait(run, self.finished)
+        self.assistant.start("Which manages which?", run_id=run.id)
+        self.wait(run, lambda item: self.finished(item) and len(self.api.requests) == 2)
+        messages = self.api.requests[1]["body"]["messages"]
+        self.assertEqual([item["role"] for item in messages], ["user", "assistant", "user"])
+        self.assertEqual(messages[-1]["content"], "Which manages which?")
+
+
+class AssistantApiTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(self.temp.name)
+        self.lab = Lab(FakeSource(), self.store)
+        self.lab.discover()
+        self.assistant = Assistant(self.lab, self.store, self.temp.name)
+        self.router = start_router()
+        self.saved_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+        self.server = start(create_server(("127.0.0.1", 0), f"http://127.0.0.1:{self.router.server_port}",
+                                          lab=self.lab, store=self.store, assistant=self.assistant))
+        self.port = self.server.server_port
+
+    def tearDown(self):
+        if self.saved_key is not None:
+            os.environ["ANTHROPIC_API_KEY"] = self.saved_key
+        self.server.shutdown()
+        self.server.server_close()
+        self.router.shutdown()
+        self.router.server_close()
+        self.store.db.close()
+        self.temp.cleanup()
+
+    def test_the_key_is_saved_privately_and_never_returned(self):
+        status, body = call(self.port, "GET", "/observer/api/assistant")
+        self.assertFalse(body["status"]["configured"])
+        status, body = call(self.port, "POST", "/observer/api/assistant/runs", {"prompt": "hi"})
+        self.assertEqual(status, 400)
+        status, body = call(self.port, "POST", "/observer/api/assistant/key", {"api_key": "short"})
+        self.assertEqual(status, 400)
+        status, body = call(self.port, "POST", "/observer/api/assistant/key", {"api_key": KEY})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["status"]["configured"])
+        self.assertNotIn(KEY, json.dumps(body))
+        self.assertEqual(stat.S_IMODE(os.stat(self.assistant.key.path).st_mode), 0o600)
+        status, body = call(self.port, "GET", "/observer/api/assistant")
+        self.assertNotIn(KEY, json.dumps(body))
+        call(self.port, "POST", "/observer/api/assistant/key", {"api_key": ""})
+        self.assertFalse(self.assistant.key.path.exists())
+
+    def test_unknown_runs_and_approvals_are_refused(self):
+        self.assertEqual(call(self.port, "GET", "/observer/api/assistant/runs/nope")[0], 404)
+        self.assertEqual(call(self.port, "POST", "/observer/api/assistant/runs/nope/approvals/x", {"decision": "approve"})[0], 409)
+
+
+if __name__ == "__main__":
+    unittest.main()

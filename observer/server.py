@@ -30,7 +30,7 @@ HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriz
 class ObserverServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None):
+    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None):
         secure_mode = any(item is not None for item in (auth_file, certfile, keyfile))
         if secure_mode and not all(item is not None for item in (auth_file, certfile, keyfile)):
             raise ValueError("LAN mode requires authentication, certificate, and private key files")
@@ -55,7 +55,7 @@ class ObserverServer(ThreadingHTTPServer):
         self.upstream_origin = f"http://{self.upstream_host}:{self.upstream_port}"
         self.scheme = "https" if secure_mode else "http"
         self.allowed_hosts = {address[0]} if secure_mode else {"127.0.0.1", "localhost"}
-        self.lab, self.store, self.capture, self.monitor = lab, store, capture, monitor
+        self.lab, self.store, self.capture, self.monitor, self.assistant = lab, store, capture, monitor, assistant
         super().__init__(address, ObserverHandler)
         if context is not None:
             self.socket = context.wrap_socket(self.socket, server_side=True)
@@ -202,12 +202,72 @@ class ObserverHandler(BaseHTTPRequestHandler):
             components = [item for item in body.get("components", []) if item in lab.web_components()] or None
             threading.Thread(target=self.server.capture.run, args=(components,), daemon=True).start()
             self._json(202, {"started": True})
+        elif parts[:2] == ["api", "assistant"] and self.server.assistant:
+            self._assistant_route(parts[2:], query, get, post)
         elif len(parts) == 3 and parts[0] == "captures" and get and self.server.capture:
             capture_path = self.server.capture.path_for(f"{parts[1]}/{parts[2]}")
             if capture_path is None:
                 self._send(404, b"Not found", "text/plain; charset=utf-8")
             else:
                 self._send(200, capture_path.read_bytes(), "image/jpeg", cache="private, max-age=86400")
+        else:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+
+    def _assistant_route(self, parts, query, get, post):
+        assistant = self.server.assistant
+        if parts == [] and get:
+            self._json(200, {"status": assistant.status(), "runs": self.server.store.runs()})
+        elif parts == ["key"] and post:
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                assistant.key.save(body.get("api_key"))
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(200, {"status": assistant.status()})
+        elif parts == ["runs"] and post:
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                run = assistant.start(str(body.get("prompt") or ""))
+            except (RuntimeError, ValueError) as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(202, run.view())
+        elif len(parts) == 2 and parts[0] == "runs" and get:
+            run = assistant.get(parts[1])
+            since = query.get("since", ["0"])[0]
+            if run is None:
+                self._json(404, {"error": "unknown_run"})
+            else:
+                self._json(200, run.view(int(since) if since.isdigit() else 0))
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "messages" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                run = assistant.start(str(body.get("prompt") or ""), run_id=parts[1])
+            except KeyError:
+                self._json(404, {"error": "unknown_run"})
+                return
+            except (RuntimeError, ValueError) as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(202, run.view())
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "stop" and post:
+            self._json(200 if assistant.stop(parts[1]) else 404, {"stopping": True})
+        elif len(parts) == 4 and parts[0] == "runs" and parts[2] == "approvals" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.runs.get(parts[1])
+            if run is None or not run.decide(parts[3], body.get("decision"), body.get("note")):
+                self._json(409, {"error": "no_pending_approval"})
+                return
+            self._json(200, {"decided": True})
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
@@ -431,12 +491,13 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
 
 def create_server(address=("127.0.0.1", 8765), router_url="http://127.0.0.1:8190", *, auth_file=None, certfile=None, keyfile=None,
-                  lab=None, store=None, capture=None, monitor=None):
+                  lab=None, store=None, capture=None, monitor=None, assistant=None):
     return ObserverServer(address, router_url, auth_file=auth_file, certfile=certfile, keyfile=keyfile,
-                          lab=lab, store=store, capture=capture, monitor=monitor)
+                          lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant)
 
 
 def main():
+    from observer.assistant import Assistant
     from observer.capture import Capture
     from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, PodmanSplunkSource
     from observer.monitor import Monitor
@@ -458,7 +519,8 @@ def main():
     # Saved previews stay viewable with --no-capture; only new captures stop.
     capture = Capture(lab, store, args.data_dir)
     monitor = Monitor(lab, store, capture)
-    options = dict(lab=lab, store=store, capture=capture, monitor=monitor)
+    assistant = Assistant(lab, store, args.config_dir, monitor)
+    options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant)
     if args.lan_address:
         address = private_lan_address(args.lan_address)
         server = create_server(

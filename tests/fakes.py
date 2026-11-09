@@ -78,7 +78,15 @@ class FakeSource:
         raise RuntimeError("unexpected command")
 
     def logs(self, component, tail=80):
-        return f"{component} log line\n"
+        return f"{component} log line\nadmin password = hunter2\n"
+
+    def splunk_search(self, component, query, earliest, latest, max_count):
+        self.searches = getattr(self, "searches", []) + [query]
+        return [{"component": "TailReader", "count": "3", "_raw": "raw event text"}], f"splunkd {component} oneshot"
+
+    def container_action(self, component, action):
+        item = next(item for item in self.container_list if item["name"] == component)
+        item["state"] = "exited" if action == "stop" else "running"
 
     def stats(self):
         return {item["name"]: {"cpu_percent": "1.0%", "mem_usage": "100MB / 1GB", "mem_percent": "10%"}

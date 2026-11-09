@@ -98,6 +98,24 @@ class PodmanSplunkSource:
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response), source
 
+    def splunk_search(self, component, query, earliest, latest, max_count):
+        """A blocking one-shot search as the read-only account; returns result rows."""
+        source = f"splunkd {component}/services/search/jobs (oneshot) as {self.username}"
+        body = urllib.parse.urlencode({"search": query, "exec_mode": "oneshot", "earliest_time": earliest,
+                                       "latest_time": latest, "count": max_count, "output_mode": "json"}).encode()
+        request = urllib.request.Request(f"{self.router}/mgmt/{component}/services/search/jobs", data=body,
+                                         headers={"Authorization": self._authorization})
+        with urllib.request.urlopen(request, timeout=90) as response:
+            return json.load(response).get("results", []), source
+
+    def container_action(self, component, action):
+        """Start, stop, or restart one lab container. Only an owner-approved assistant step calls this."""
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError(action)
+        result = subprocess.run(["podman", action, component], capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip()[:300] or f"exit {result.returncode}")
+
     def web_status(self, component):
         try:
             with urllib.request.urlopen(f"{self.router}/lab/{component}/en-US/account/login", timeout=8) as response:

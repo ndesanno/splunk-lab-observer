@@ -25,11 +25,22 @@ From this checkout:
 python3 -m observer.server
 ```
 
+To use Ask Claude, run the observer with the Anthropic SDK installed, for example in a virtual environment (Debian's Python has no `ensurepip`, so bootstrap pip with `get-pip.py` if `python3 -m venv` leaves none):
+
+```sh
+python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m observer.server
+```
+
+Then open the panel and paste an Anthropic API key. It is saved in `~/.config/splunk-lab-observer/anthropic.json` (mode 600) and never shown again; `ANTHROPIC_API_KEY` works too.
+
 Open <http://127.0.0.1:8765/observer/>.
 
 - **Wall:** choose components, switch each between a live Splunk screen and a timestamped preview, arrange them by dragging or with the arrows, focus one, and save the layout. Live screens are full Splunk pages; sign in with your own lab account. Headless components (forwarders, load balancer, generators) show their container log and resource use.
 - **Overview:** discovered components, clusters, and relationships. Every fact shows its source and check time. Your own names and descriptions are marked as labels and never replace discovered facts.
 - **Changes:** state changes found by the minute-by-minute background checks, each linked to the observation that showed it.
+
+- **Ask Claude:** a panel beside the wall where you ask about the lab or ask for something to be done. Claude investigates with read-only tools (lab registry, recorded history, splunkd REST and aggregate searches as `lab_observer`, container logs), opens the screens it is looking at in your focused view, and asks before any change. Each step shows the evidence sent to Claude. Container start, stop and restart wait for your approval of the stated reason, effect and cleanup. Runs are kept for 30 days; pick an earlier one to continue it.
 
 Background work: discovery every 5 minutes, health (container state, Splunk health, splunkd messages, web reachability, resource use) every minute, and previews of every Splunk Web every 10 minutes. Previews are taken by a headless browser container signed in as `lab_observer`; the first run builds `localhost/lab-observer-capture`. Observations are kept for 30 days and previews for 48 hours, under `~/.local/share/splunk-lab-observer/`. Use `--no-capture` to skip previews.
 
