@@ -35,7 +35,9 @@
     .picker { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); padding: .6rem .8rem; margin-bottom: .8rem; columns: 17rem; column-gap: 1.5rem; }
     .picker section { break-inside: avoid; margin-bottom: .6rem; }
     .picker h3 { margin: 0 0 .3rem; font-size: .85rem; color: var(--muted); font-weight: 600; }
-    .picker label { display: flex; gap: .4rem; align-items: center; font-size: .88rem; padding: .1rem 0; }
+    .picker label { display: flex; gap: .4rem; align-items: center; font-size: .88rem; padding: .15rem 0; }
+    .picker .pick-name { flex: 1; min-width: 0; }
+    .picker .pick-host { display: block; font-size: .72rem; }
     .wall[hidden], [hidden] { display: none !important; }
     .wall { display: grid; gap: .8rem; grid-template-columns: repeat(var(--columns, 3), minmax(0, 1fr)); }
     .tile { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
@@ -186,6 +188,67 @@
     }
     const docker = container && container.health;
     return h('span', {class: `badge ${docker === 'unhealthy' ? 'bad' : 'ok'}`, title: 'Container state from podman ps'}, docker ? `running, ${docker}` : 'running');
+  }
+  // A plain-English description built from discovered roles, clusters, and relationships.
+  function siteOf(component) {
+    const group = lab.groups.find(item => item.members.includes(component.id) && item.label);
+    if (group) return group.label;
+    const token = component.id.split('-')[1];
+    return token && !['fwd', 'lab', 'observer'].includes(token) ? token : null;
+  }
+  function siteName(site) {
+    if (!site) return '';
+    if (site === 'mgmt') return 'Management';
+    return site.length <= 3 ? site.toUpperCase() : site[0].toUpperCase() + site.slice(1);
+  }
+  function describeTargets(ids) {
+    const group = ids.length > 1 && lab.groups.find(item => ids.every(id => item.members.includes(id)));
+    if (group) return groupName(group);
+    return ids.map(id => byId(id) ? plainName(byId(id), true) : id).join(', ');
+  }
+  function groupName(group) {
+    return `${siteName(group.label)} ${group.type === 'indexer_cluster' ? 'indexer cluster' : 'search head cluster'}`.trim();
+  }
+  function plainName(component, short) {
+    const roles = new Set((component.facts.server_roles || {}).value || []);
+    const site = siteName(siteOf(component));
+    const number = (component.id.match(/(\d+)$/) || [])[1];
+    const at = site ? `${site} ` : '';
+    const outgoing = type => lab.relationships.filter(rel => rel.from === component.id && rel.type === type).map(rel => rel.to);
+    const incoming = type => lab.relationships.filter(rel => rel.to === component.id && rel.type === type);
+    const image = (component.facts.image || {}).value || '';
+    const version = (image.split(':')[1] || '');
+    const federated = incoming('federated search provider').length ? ' (federated search provider for HQ)' : '';
+    let name;
+    if (component.kind === 'splunk_enterprise') {
+      if (roles.has('cluster_manager')) name = `${at}indexer cluster manager`;
+      else if (roles.has('shc_deployer')) name = `${at}search head cluster deployer`;
+      else if (roles.has('shc_member') || roles.has('shc_captain')) name = `${at}search head${number ? ` ${number}` : ''}${roles.has('shc_captain') && !short ? ' (cluster captain)' : ''}`;
+      else if (roles.has('cluster_peer')) name = `${at}indexer${number ? ` ${number}` : ''}`;
+      else if (roles.has('heavyweight_forwarder')) name = `Heavy forwarder, Splunk ${(component.facts.splunk_version || {}).value || version}`;
+      else if (roles.has('indexer') && roles.has('search_head')) name = `${at}standalone search head and indexer`;
+      else if (roles.has('indexer')) name = `${at}standalone indexer${short ? '' : federated}`;
+      else if (roles.has('search_head')) name = `${at}standalone search head`;
+      else name = `${at}Splunk Enterprise instance`;
+      if (roles.has('heavyweight_forwarder') && !short) {
+        const targets = outgoing('sends data to');
+        if (targets.length) name += `, sends to ${describeTargets(targets)}`;
+      }
+    } else if (component.kind === 'universal_forwarder') {
+      name = `${at}universal forwarder${version ? ` ${version}` : ''}`;
+      const targets = outgoing('sends data to');
+      const managers = outgoing('discovers indexers through');
+      const cluster = managers.length && lab.groups.find(group => group.manager === managers[0]);
+      if (targets.length && !short) name += `, sends to ${describeTargets(targets)}`;
+      else if (cluster && !short) name += `, sends to ${groupName(cluster)} (found through its manager)`;
+    } else if (component.kind === 'load_balancer') {
+      const targets = outgoing('load balances');
+      name = targets.length ? `Load balancer for the ${describeTargets(targets)}` : `${at}load balancer`;
+      if (!short && incoming('federated search provider').length) name += ' (HQ federated search entry point)';
+    } else if (component.kind === 'data_generator') name = `${at}test data generator`;
+    else if (component.kind === 'observer_router') name = 'Observer router (connects this page to Splunk)';
+    else name = `${component.id.replace(/^p-/, '').split('-').join(' ')} container`;
+    return name[0].toUpperCase() + name.slice(1);
   }
   function kindLabel(kind) {
     return {splunk_enterprise: 'Splunk Enterprise', universal_forwarder: 'Universal forwarder', load_balancer: 'Load balancer',
@@ -348,13 +411,13 @@
     for (const group of lab.groups) {
       const members = group.members.filter(byId);
       members.forEach(id => seen.add(id));
-      const title = group.type === 'indexer_cluster' ? `Indexer cluster ${group.label || ''} (manager ${group.manager})` : `Search head cluster ${group.label || ''}`;
-      sections.push([title, members]);
+      sections.push([groupName(group), members]);
     }
     const rest = lab.components.filter(item => !seen.has(item.id));
     for (const kind of ['splunk_enterprise', 'universal_forwarder', 'load_balancer', 'data_generator', 'observer_router', 'container']) {
       const members = rest.filter(item => item.kind === kind).map(item => item.id);
-      if (members.length) sections.push([kindLabel(kind) + (kind === 'splunk_enterprise' ? ' (other)' : ''), members]);
+      if (members.length) sections.push([{splunk_enterprise: 'Other Splunk servers', universal_forwarder: 'Universal forwarders',
+        load_balancer: 'Load balancers', data_generator: 'Test data generators', observer_router: 'Observer', container: 'Other containers'}[kind], members]);
     }
     return sections;
   }
@@ -368,7 +431,8 @@
           h('input', {type: 'checkbox', checked: Boolean(tile), onchange: event => {
             if (event.target.checked) layout.tiles.push({id, live: false}); else layout.tiles = layout.tiles.filter(item => item.id !== id);
             render(); }}),
-          displayName(component), ' ', stateBadge(component), isWeb(component) ? '' : h('span', {class: 'muted'}, ' console'));
+          h('span', {class: 'pick-name'}, component.owner_name || plainName(component),
+            h('span', {class: 'muted pick-host'}, component.id, isWeb(component) ? '' : ' · console')), stateBadge(component));
       }))));
   }
 
