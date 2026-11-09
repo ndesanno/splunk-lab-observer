@@ -80,6 +80,8 @@ checkpoint after each agreed step. Read the screen again after anything changes.
 page, ask the owner to sign in; never type passwords. Clicks that save, delete, enable or submit wait for approval. \
 To run a search in Splunk Web, open /en-US/app/search/search?q=<URL-encoded SPL>&earliest=-60m with show_screen \
 (the search bar is a code editor that typing cannot drive); raw events on screen are left out of read_screen.
+- When the owner asks for a test or check, end with record_verdict (pass, fail or inconclusive) naming the step \
+numbers that support it, and save key screens with capture_evidence. Each tool result's step number is its seq.
 - Searches must aggregate (stats, timechart, tstats, top and similar); raw events are not available to you.
 - Keep answers short and concrete. Use plain text with short lists; no tables wider than four columns."""
 
@@ -95,6 +97,12 @@ def _without_raw(value):
     if isinstance(value, list):
         return [_without_raw(item) for item in value]
     return value
+
+
+def _screen_path(url):
+    """/lab/<component>/en-US/app/... -> /en-US/app/..., the path a screenshot or show_screen takes."""
+    match = re.match(r"^/lab/[^/]+(/en-US/.*)$", url or "")
+    return match.group(1) if match else None
 
 
 def _without_secrets(value):
@@ -239,7 +247,8 @@ class Run:
             self.update_event(item["seq"], status="stopped" if self.cancel.is_set() else "expired")
             raise RuntimeError("The owner stopped this run" if self.cancel.is_set() else "The owner's page did not answer within 15 minutes")
         self.update_event(item["seq"], status="done" if result.get("ok") else "failed",
-                          summary=(result.get("result") or {}).get("summary"), done_at=utc_now())
+                          summary=(result.get("result") or {}).get("summary"), done_at=utc_now(),
+                          summary_url=_screen_path((result.get("result") or {}).get("url")))
         if not result.get("ok"):
             raise RuntimeError((result.get("result") or {}).get("error") or "The page could not do that")
         return result["result"]
@@ -273,10 +282,11 @@ class Run:
 
 
 class Assistant:
-    def __init__(self, lab, store, config_dir, monitor=None, operator=None):
+    def __init__(self, lab, store, config_dir, monitor=None, operator=None, capture=None):
         self.lab = lab
         self.store = store
         self.monitor = monitor
+        self.capture = capture
         self.key = ApiKey(config_dir)
         self.operator = operator
         self.runs = {}  # live runs; finished runs are read back from the store
@@ -321,12 +331,61 @@ class Assistant:
                 run.cancel.clear()
             else:
                 run = Run(self.store, prompt)
+                run.record["lab_state"] = self.lab_state()
             self.runs[run.id] = run
         run.record["messages"].append({"role": "user", "content": prompt})
         run.event("prompt", text=prompt)
         run.set_status("running")
         threading.Thread(target=self._work, args=(run,), name=f"assistant-{run.id}", daemon=True).start()
         return run
+
+    def lab_state(self):
+        """Versions and state of every component when a run starts, kept with the run's evidence."""
+        snapshot = self.lab.snapshot()
+        components = []
+        for item in snapshot["components"]:
+            container = self.store.latest(item["id"], "container")
+            health = self.store.latest(item["id"], "splunk_health")
+            components.append({
+                "id": item["id"], "kind": item["kind"],
+                "state": container["value"].get("state") if container else item["facts"]["container_state"]["value"],
+                "splunk_health": health["value"].get("health") if health else None,
+                "version": (item["facts"].get("splunk_version") or {}).get("value") or
+                           ((item["facts"].get("image") or {}).get("value") or "").rpartition(":")[2] or None,
+                "apps": {app["app"]: app["version"] for app in (item["facts"].get("installed_apps") or {}).get("value", [])
+                         if app["visible"] and not app["disabled"]}})
+        return {"checked_at": utc_now(), "discovered_at": snapshot["checked_at"], "components": components}
+
+    def evidence_dir(self, run_id):
+        return Path(self.store.data_dir) / "runs" / run_id
+
+    def evidence_path(self, run_id, name):
+        """A run's evidence file, refusing anything outside its folder."""
+        folder = self.evidence_dir(run_id).resolve()
+        path = (folder / name).resolve()
+        if path.suffix != ".jpg" or not path.is_relative_to(folder) or not path.is_file():
+            return None
+        return path
+
+    def pin(self, run_id, pinned):
+        run = self.get(run_id)
+        if run is None:
+            return None
+        run.record["pinned"] = bool(pinned)
+        run.event("note", text="You pinned this run; its evidence is kept until you unpin it." if pinned
+                  else "You unpinned this run; it follows the 30-day retention again.")
+        return run
+
+    def screenshot(self, run, component, screen, caption):
+        """Save a screenshot of a page as run evidence. It stays on this workstation and is not sent to the model."""
+        if self.capture is None:
+            raise RuntimeError("Screenshots are not available in this observer")
+        shot = self.capture.screenshot(component, screen, self.evidence_dir(run.id))
+        if not shot.get("file"):
+            raise RuntimeError(shot.get("error") or "no screenshot")
+        account = getattr(self.lab.source, "username", "lab_observer")
+        return run.event("evidence", component=component, file=shot["file"], page=shot.get("page"), title=shot.get("title"),
+                         caption=caption, captured_at=shot["captured_at"], source=f"headless Chromium as {account}")
 
     def stop(self, run_id):
         run = self.runs.get(run_id)
@@ -395,6 +454,12 @@ class Assistant:
         run.set_status(status)
 
     # --- audited tools --------------------------------------------------------------
+
+    def _quiet_screenshot(self, run, component, screen, caption):
+        try:
+            self.screenshot(run, component, screen, caption)
+        except Exception as error:  # a missing screenshot is noted, never fatal to the walkthrough
+            run.event("note", text=f"Screenshot for “{caption}” failed: {error.__class__.__name__}: {str(error)[:160]}")
 
     def _call(self, run, name, arguments, source, work):
         """Run one tool, recording its input, source, time, and the exact text returned to the model."""
@@ -789,6 +854,15 @@ class Assistant:
             arguments = {"step_done": step_done, "observed": observed, "next_step": next_step}
 
             def work():
+                shown = [item for item in run.record["events"] if item["type"] in {"display", "browser"}]
+                if shown and self.capture is not None:  # a screenshot of the step's screen, kept with the run
+                    last = shown[-1]
+                    component = last.get("component") or (last.get("payload") or {}).get("component")
+                    page = last.get("path") if last["type"] == "display" else None
+                    if not page:
+                        page = next((item.get("summary_url") for item in reversed(shown) if item.get("summary_url")), None)
+                    threading.Thread(target=self._quiet_screenshot, args=(run, component, page or "/en-US/app/launcher/home",
+                                                                          f"After step: {step_done}"), daemon=True).start()
                 decision = run.ask_approval(f"Step done: {step_done}", arguments, kind="checkpoint")
                 if decision["decision"] != "approved":
                     raise ToolError("The owner stopped the walkthrough here." +
@@ -796,9 +870,53 @@ class Assistant:
                 return {"continue": True, "note": decision.get("note")}
             return self._call(run, "checkpoint", arguments, "owner decision", work)
 
+        @beta_tool
+        def capture_evidence(component: str, path: str, caption: str) -> str:
+            """Save a screenshot of a Splunk Web page as evidence in this run's record, for the owner to review later.
+            The screenshot is taken by a separate headless browser as lab_observer, stays on this workstation, and is
+            not sent to you. Use it for results that support a verdict. lab_observer is read-only: Settings pages
+            that need admin (indexes, users, server settings) show Splunk's "Page not found", so check the returned
+            title and say so if a page could not be captured.
+
+            Args:
+                component: Component id with Splunk Web.
+                path: Page path starting with /en-US/, e.g. /en-US/app/search/datasets.
+                caption: What the screenshot shows and why it matters.
+            """
+            def work():
+                web_component(component)
+                if not path.startswith("/en-US/") or ".." in path.split("?")[0]:
+                    raise ValueError("path must start with /en-US/")
+                item = self.screenshot(run, component, path, caption)
+                return {"saved": item["file"], "page": item.get("page"), "title": item.get("title"),
+                        "note": "Saved in the run record; the image was not sent to you."}
+            return self._call(run, "capture_evidence", {"component": component, "path": path, "caption": caption},
+                              f"headless Chromium as {account}", work)
+
+        @beta_tool
+        def record_verdict(verdict: Literal["pass", "fail", "inconclusive"], summary: str, evidence_steps: list[int]) -> str:
+            """Record the outcome of a test or investigation in the run record, linked to the steps that support it.
+            Call it once at the end of any test or check, including when the result is inconclusive.
+
+            Args:
+                verdict: pass, fail or inconclusive.
+                summary: One to three sentences: what was checked and what the evidence showed.
+                evidence_steps: Step numbers (seq) of the tool results and screenshots that support the verdict.
+            """
+            arguments = {"verdict": verdict, "summary": summary, "evidence_steps": evidence_steps}
+
+            def work():
+                known = {item["seq"] for item in run.record["events"]}
+                missing = [seq for seq in evidence_steps if seq not in known]
+                run.record["verdict"] = {"verdict": verdict, "summary": summary, "evidence_steps": evidence_steps,
+                                         "recorded_at": utc_now()}
+                run.event("verdict", **run.record["verdict"])
+                return {"recorded": verdict, "unknown_steps": missing}
+            return self._call(run, "record_verdict", arguments, "run record", work)
+
         tools = [lab_overview, component_status, list_screens, show_screen, splunk_rest_get, run_search,
                  container_logs, recorded_changes, container_action, read_screen, click, type_text, select_option,
-                 propose_walkthrough, checkpoint]
+                 propose_walkthrough, checkpoint, capture_evidence, record_verdict]
         operator = self.operator
         if operator is None:
             return tools

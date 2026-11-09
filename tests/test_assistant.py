@@ -1,6 +1,7 @@
 """Claude runs against a fake Messages API: audited tools, shown screens, and approval-gated changes."""
 
 import json
+from pathlib import Path
 import os
 import stat
 import tempfile
@@ -455,3 +456,64 @@ class SharedViewTest(AssistantFixture):
         last = self.api.requests[3]["body"]["messages"][-1]["content"][0]
         self.assertTrue(last["is_error"])
         self.assertIn("not open", json.dumps(last["content"]))
+
+
+class FakeCapture:
+    def __init__(self):
+        self.shots = []
+
+    def screenshot(self, component, screen, directory):
+        self.shots.append((component, screen))
+        (Path(directory) / component).mkdir(parents=True, exist_ok=True)
+        name = f"{component}/{len(self.shots)}.jpg"
+        (Path(directory) / name).write_bytes(b"\xff\xd8jpeg")
+        return {"component": component, "file": name, "page": screen, "title": "Datasets", "captured_at": "2026-11-09T00:00:00Z"}
+
+
+@unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")
+class RunEvidenceTest(AssistantFixture):
+    def setUp(self):
+        super().setUp()
+        self.capture = FakeCapture()
+        self.assistant.capture = self.capture
+
+    def test_a_run_keeps_lab_state_screenshots_and_a_linked_verdict(self):
+        self.api.script = [
+            message([tool_use("t1", "component_status", {"component": "p-sh1"}),
+                     tool_use("t2", "capture_evidence", {"component": "p-sh1", "path": "/en-US/app/search/datasets", "caption": "Datasets list"})], "tool_use"),
+            message([tool_use("t3", "record_verdict", {"verdict": "pass", "summary": "Datasets load.", "evidence_steps": [3, 5, 99]})], "tool_use"),
+            message([{"type": "text", "text": "Pass."}], "end_turn"),
+        ]
+        run = self.assistant.start("Check the datasets page")
+        self.wait(run, self.finished)
+        state = {item["id"]: item for item in run.record["lab_state"]["components"]}
+        self.assertEqual(state["p-sh1"]["version"], "10.2.4")
+        self.assertEqual(state["p-sh1"]["apps"]["TA-hindsight"], "0.8.1")
+        self.assertEqual(state["p-uf"]["version"], "10.2.4")  # from the image tag
+        shot = next(item for item in run.record["events"] if item["type"] == "evidence")
+        self.assertEqual(self.capture.shots, [("p-sh1", "/en-US/app/search/datasets")])
+        self.assertIsNotNone(self.assistant.evidence_path(run.id, shot["file"]))
+        self.assertIsNone(self.assistant.evidence_path(run.id, "../../observer.db"))
+        self.assertNotIn("jpeg", json.dumps([request["body"] for request in self.api.requests]))  # images stay local
+        self.assertEqual(run.record["verdict"]["verdict"], "pass")
+        result = self.api.requests[2]["body"]["messages"][-1]["content"][0]
+        self.assertIn("99", json.dumps(result["content"]))  # an unknown step is reported back
+        self.assertEqual(self.store.runs()[0]["verdict"], "pass")
+
+    def test_pinned_runs_and_their_evidence_outlive_retention(self):
+        self.api.script = [message([tool_use("t1", "capture_evidence", {"component": "p-sh1", "path": "/en-US/app/search/search", "caption": "x"})], "tool_use"),
+                           message([{"type": "text", "text": "a"}], "end_turn"),
+                           message([tool_use("t2", "capture_evidence", {"component": "p-sh2", "path": "/en-US/app/search/search", "caption": "y"})], "tool_use"),
+                           message([{"type": "text", "text": "b"}], "end_turn")]
+        kept = self.assistant.start("keep me")
+        self.wait(kept, self.finished)
+        dropped = self.assistant.start("drop me")
+        self.wait(dropped, self.finished)
+        self.assistant.pin(kept.id, True)
+        self.assertEqual(self.store.runs()[0]["pinned"] if self.store.runs()[0]["id"] == kept.id else self.store.runs()[1]["pinned"], 1)
+        expired = self.store.prune(now=time.time() + 31 * 24 * 3600)
+        self.assertEqual(expired, [dropped.id])
+        self.assertIsNotNone(self.store.run(kept.id))
+        self.assertIsNone(self.store.run(dropped.id))
+        self.assertTrue(self.assistant.evidence_dir(kept.id).exists())
+        self.assertFalse(self.assistant.evidence_dir(dropped.id).exists())

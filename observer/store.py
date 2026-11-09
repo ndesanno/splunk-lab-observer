@@ -1,6 +1,7 @@
 """Timestamped observations, state changes, owner labels, and saved layouts."""
 
 import json
+import shutil
 import sqlite3
 import threading
 import time
@@ -122,11 +123,17 @@ class Store:
                 for row in rows]
 
     def prune(self, now=None):
+        """Drop observations and unpinned runs (with their evidence files) older than the retention period."""
         cutoff = (now or time.time()) - RETENTION_SECONDS
         with self.lock, self.db:
             self.db.execute("DELETE FROM observations WHERE epoch < ?", (cutoff,))
             self.db.execute("DELETE FROM changes WHERE epoch < ?", (cutoff,))
-            self.db.execute("DELETE FROM runs WHERE epoch < ?", (cutoff,))
+            expired = [row["id"] for row in self.db.execute(
+                "SELECT id FROM runs WHERE epoch < ? AND coalesce(json_extract(record, '$.pinned'), 0) = 0", (cutoff,))]
+            self.db.executemany("DELETE FROM runs WHERE id = ?", [(run_id,) for run_id in expired])
+        for run_id in expired:
+            shutil.rmtree(self.data_dir / "runs" / run_id, ignore_errors=True)
+        return expired
 
     def save_run(self, record):
         """One assistant run: its prompt, every step and the evidence sent to the model."""
@@ -150,7 +157,8 @@ class Store:
 
     def runs(self, limit=30):
         with self.lock:
-            rows = self.db.execute("SELECT id, created_at, updated_at, status, title, json_extract(record, '$.origin') AS origin"
+            rows = self.db.execute("SELECT id, created_at, updated_at, status, title, json_extract(record, '$.origin') AS origin,"
+                                   " json_extract(record, '$.pinned') AS pinned, json_extract(record, '$.verdict.verdict') AS verdict"
                                    " FROM runs ORDER BY epoch DESC LIMIT ?",
                                    (limit,)).fetchall()
         return [dict(row) for row in rows]

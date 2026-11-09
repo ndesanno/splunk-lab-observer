@@ -100,6 +100,29 @@ class Capture:
             self.status["running"] = False
             self.lock.release()
 
+    def screenshot(self, component, screen, directory):
+        """One screenshot of a chosen page, saved under `directory` (a run's evidence folder), not the preview cache."""
+        directory = Path(directory)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._ensure_image()
+        with tempfile.NamedTemporaryFile("w", dir=self.directory.parent, prefix=".capture-env-", delete=False) as env:
+            os.chmod(env.name, 0o600)
+            env.write(f"OBSERVER_USER={self.lab.source.username}\nOBSERVER_PASSWORD={self.lab.source.password_for_capture()}\n")
+        try:
+            result = subprocess.run(
+                ["podman", "run", "--rm", "--network", "host", "--memory", "1500m", "--env-file", env.name,
+                 "-v", f"{SCRIPT}:/capture_browser.py:ro,Z", "-v", f"{directory}:/out:Z",
+                 IMAGE, "python3", "/capture_browser.py", self.lab.source.router, f"{component}::{screen}"],
+                capture_output=True, text=True, timeout=180)
+        finally:
+            os.unlink(env.name)
+        for line in result.stdout.splitlines():
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+        raise RuntimeError(result.stderr.strip()[-300:] or "no screenshot")
+
     def path_for(self, file_name):
         """Resolve a capture file name from an observation, refusing anything outside the directory."""
         path = (self.directory / file_name).resolve()

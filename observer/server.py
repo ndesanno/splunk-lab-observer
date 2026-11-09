@@ -281,6 +281,31 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 self._json(409, {"error": "invalid_control"})
                 return
             self._json(200, {"paused": run.record.get("paused", False)})
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "pin" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.pin(parts[1], body.get("pinned"))
+            self._json(200 if run else 404, {"pinned": run.record.get("pinned") if run else None})
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "record" and get:
+            run = assistant.get(parts[1])
+            if run is None:
+                self._json(404, {"error": "unknown_run"})
+                return
+            body = json.dumps(run.view(), indent=1).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", f'attachment; filename="observer-run-{parts[1]}.json"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        elif len(parts) >= 4 and parts[0] == "runs" and parts[2] == "evidence" and get:
+            path = assistant.evidence_path(parts[1], "/".join(parts[3:]))
+            if path is None:
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+            else:
+                self._send(200, path.read_bytes(), "image/jpeg", cache="private, max-age=86400")
         elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "stop" and post:
             self._json(200 if assistant.stop(parts[1]) else 404, {"stopping": True})
         elif len(parts) == 4 and parts[0] == "runs" and parts[2] == "approvals" and post:
@@ -545,7 +570,7 @@ def main():
     monitor = Monitor(lab, store, capture)
     operator_file = args.config_dir / "operator.json"
     operator = OperatorAccount(operator_file) if operator_file.exists() else None
-    assistant = Assistant(lab, store, args.config_dir, monitor, operator)
+    assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture)
     options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant)
     if args.lan_address:
         address = private_lan_address(args.lan_address)

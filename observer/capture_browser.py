@@ -1,6 +1,7 @@
 """Runs inside the capture container: sign in to each Splunk Web and save a screenshot.
 
-argv: <router URL> <component>...; credentials arrive in the environment from a mode-600 file.
+argv: <router URL> <component>[::<path>]...; a path such as /en-US/app/search/datasets opens that page
+instead of the launcher. Credentials arrive in the environment from a mode-600 file.
 Prints one JSON line per component and never prints the password.
 """
 
@@ -18,12 +19,14 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def capture(browser, router, component):
+def capture(browser, router, target):
+    component, _, screen = target.partition("::")
+    screen = screen or "/en-US/app/launcher/home"
     base = f"{router}/lab/{component}"
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     page = context.new_page()
     try:
-        page.goto(f"{base}/en-US/account/login?return_to=/lab/{component}/en-US/app/launcher/home", timeout=30000)
+        page.goto(f"{base}/en-US/account/login?return_to=/lab/{component}{screen}", timeout=30000)
         if page.locator("#username").count():
             page.fill("#username", os.environ["OBSERVER_USER"])
             page.fill("#password", os.environ["OBSERVER_PASSWORD"])

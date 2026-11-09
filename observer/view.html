@@ -168,7 +168,7 @@
       else if (key === 'style') node.setAttribute('style', value);
       else node.setAttribute(key, value === true ? '' : value);
     }
-    for (const child of children.flat()) {
+    for (const child of children.flat(Infinity)) {
       if (child === null || child === undefined || child === false) continue;
       node.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
@@ -1174,6 +1174,19 @@
           item.summary ? h('div', {class: 'fact-source'}, item.summary) : null);
       }
       case 'control': return h('div', {class: 'muted'}, `${new Date(item.at).toLocaleTimeString()} · ${item.text}`);
+      case 'evidence': {
+        const src = `/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/evidence/${item.file}`;
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `📷 ${item.caption}`), time),
+          h('a', {href: src, target: '_blank', rel: 'noopener'}, h('img', {src, alt: item.caption, loading: 'lazy', style: 'width:100%;border-radius:.3rem;margin-top:.3rem'})),
+          h('div', {class: 'fact-source'}, `${item.component} ${item.page || ''} · ${item.source} · kept with this run, not sent to Claude`));
+      }
+      case 'verdict': {
+        const tone = {pass: 'ok', fail: 'bad', inconclusive: 'warn'}[item.verdict] || '';
+        return h('div', {class: 'step', style: 'white-space:normal'}, h('div', {class: 'row'}, h('strong', {}, 'Verdict'), h('span', {class: `badge ${tone}`}, item.verdict), time),
+          h('div', {}, item.summary),
+          h('div', {class: 'muted', style: 'font-size:.75rem'}, 'Supported by steps ', (item.evidence_steps || []).map((seq, index) =>
+            [index ? ', ' : '', h('a', {href: '#', onclick: event => { event.preventDefault(); trail.querySelector(`[data-seq="${seq}"]`)?.scrollIntoView({block: 'center'}); }}, `#${seq}`)])));
+      }
       case 'approval': {
         const details = item.details || {};
         if (item.kind === 'plan' || item.kind === 'checkpoint') {
@@ -1213,6 +1226,27 @@
       default: return null;
     }
   }
+  // Everything kept for a run: lab state and versions at its start, accounts, changes, screenshots, verdict.
+  function runRecord(run) {
+    const events = [...assistant.events.values()];
+    const shots = events.filter(item => item.type === 'evidence').length;
+    const failures = events.filter(item => (item.type === 'tool' && item.status === 'error') || item.type === 'error').length;
+    const state = run.lab_state;
+    const verdict = run.verdict;
+    return h('div', {class: 'row', style: 'font-size:.78rem'},
+      verdict ? h('span', {class: `badge ${{pass: 'ok', fail: 'bad', inconclusive: 'warn'}[verdict.verdict] || ''}`}, `verdict: ${verdict.verdict}`) : null,
+      h('button', {class: 'small', type: 'button', 'aria-pressed': String(Boolean(run.pinned)), title: run.pinned ? 'Kept until you unpin it' : 'Runs are kept for 30 days unless pinned',
+        onclick: async () => { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/pin`, {pinned: !run.pinned}); fetchRun(run.id); loadAssistantRuns(); }},
+        run.pinned ? '📌 Pinned' : 'Pin run'),
+      h('details', {style: 'flex:1 0 100%'}, h('summary', {}, `Run record · ${events.filter(item => item.type === 'tool').length} tool steps · ${shots} screenshot(s) · ${failures} failure(s)`),
+        h('div', {class: 'muted'}, `Accounts: ${(run.accounts || []).join(', ') || 'none'} · changes: ${(run.changes || []).length} · `,
+          run.pinned ? 'pinned' : `kept until ${new Date(Date.parse(run.created_at) + 30 * 86400000).toLocaleDateString()}`, ' · ',
+          h('a', {href: `/observer/api/assistant/runs/${encodeURIComponent(run.id)}/record`}, 'Download record (JSON)')),
+        state ? h('details', {}, h('summary', {}, `Lab at the start (${new Date(state.checked_at).toLocaleString()})`),
+          h('table', {}, h('tbody', {}, state.components.filter(item => item.kind === 'splunk_enterprise' || item.kind === 'universal_forwarder').map(item => h('tr', {},
+            h('td', {}, item.id), h('td', {}, item.state || ''), h('td', {}, item.splunk_health || ''), h('td', {}, item.version || ''),
+            h('td', {class: 'muted'}, Object.entries(item.apps || {}).filter(([app]) => !/^(splunk_|search|launcher|learned|introspection|legacy|sample|alert_|appsbrowser|journald|python_upgrade|SplunkLight|splunk-|framework|gettingstarted|user-prefs|dmc|tos|default)/i.test(app)).map(([app, version]) => `${app} ${version || ''}`).join(', '))))))) : null));
+  }
   function renderAssistant() {
     if (!assistant.open) return;
     const status = assistant.status;
@@ -1221,7 +1255,7 @@
     const tokens = usage.reduce((sum, item) => [sum[0] + (item.input_tokens || 0), sum[1] + (item.output_tokens || 0)], [0, 0]);
     const runPicker = h('select', {'aria-label': 'Conversation', onchange: event => selectRun(event.target.value || null)},
       h('option', {value: '', selected: !run}, 'New conversation'),
-      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${item.origin === 'terminal' ? '⌨ ' : ''}${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
+      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${item.pinned ? '📌 ' : ''}${item.origin === 'terminal' ? '⌨ ' : ''}${item.verdict ? `[${item.verdict}] ` : ''}${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
     assistantHead.replaceChildren(
       h('div', {class: 'row'}, h('strong', {style: 'flex:1'}, 'Claude'),
         status ? h('span', {class: 'muted', style: 'font-size:.75rem'}, `${status.model} · effort ${status.effort}`) : null,
@@ -1230,8 +1264,13 @@
       h('div', {class: 'muted', style: 'font-size:.75rem'},
         terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC, with its own access; you approve its actions there. This page follows a live session and opens each screen it shows.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
         run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
+    if (run) assistantHead.append(runRecord(run));
     const nearBottom = trail.scrollHeight - trail.scrollTop - trail.clientHeight < 80;
-    const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(stepNode).filter(Boolean);
+    const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(item => {
+      const node = stepNode(item);
+      if (node) { node.dataset.seq = item.seq; node.title = node.title || `Step #${item.seq}`; }
+      return node;
+    }).filter(Boolean);
     if (liveRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, terminalRun() ? 'Claude Code is working in the terminal…' : 'Claude is working…'));
     if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is p-hq-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
     trail.replaceChildren(...steps);
