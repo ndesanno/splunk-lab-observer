@@ -174,6 +174,40 @@ class OperatorAccount:
             return error.code, reply
 
 
+    def web_session(self, component):
+        """Sign in to a component's Splunk Web as this account, from the workstation. Returns Splunk's
+        Set-Cookie headers for the session, so the owner's view can use it; the password stays here."""
+        base = f"{self.router}/lab/{component}/en-US/account/login"
+        cookies = {}
+
+        def keep(response):
+            headers = response.headers.get_all("Set-Cookie") or []
+            for header in headers:
+                name, _, rest = header.partition("=")
+                cookies[name.strip()] = rest.split(";", 1)[0]
+            return headers
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(base, timeout=30) as response:
+            keep(response)
+        username, password = base64.b64decode(self._authorization.split()[1]).decode().split(":", 1)
+        data = urllib.parse.urlencode({"username": username, "password": password, "cval": cookies.get("cval", ""),
+                                       "set_has_logged_in": "false"}).encode()
+        request = urllib.request.Request(base, data=data, headers={
+            "Cookie": "; ".join(f"{name}={value}" for name, value in cookies.items())})
+        with opener.open(request, timeout=30) as response:
+            reply = json.loads(response.read() or b"{}")
+            headers = keep(response)
+        if reply.get("status") != 0 or not any(header.startswith("splunkd_") for header in headers):
+            raise RuntimeError(f"Splunk Web on {component} did not accept the {self.username} sign-in")
+        return [header for header in headers if not header.startswith(("cval=", "splunkweb_uid="))]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def screens_from_nav(app):
     """Screens in an app's navigation menu, in menu order, with view labels from the view files."""
     base = f"/en-US/app/{app['app']}/"

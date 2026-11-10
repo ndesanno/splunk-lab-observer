@@ -43,6 +43,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, epoch REAL NOT NULL, updated_at TEXT NOT NULL,
                     status TEXT NOT NULL, title TEXT NOT NULL, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS page_requests (
+                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL, ok INTEGER, result TEXT,
+                    created_at TEXT NOT NULL, done_at TEXT);
+                CREATE TABLE IF NOT EXISTS page_watch (run_id TEXT PRIMARY KEY, seen REAL NOT NULL, paused INTEGER NOT NULL DEFAULT 0);
             """)
 
     def record(self, component, kind, source, value, signals=None, observed_at=None):
@@ -162,6 +166,45 @@ class Store:
                                    " FROM runs ORDER BY epoch DESC LIMIT ?",
                                    (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    # --- the shared view for runs outside this process (Claude Code in the terminal) ----------
+
+    def page_watched(self, run_id, paused=None):
+        """An observer page polled this run (and, with paused, the owner paused or resumed it)."""
+        with self.lock, self.db:
+            self.db.execute("INSERT INTO page_watch (run_id, seen, paused) VALUES (?, ?, ?) ON CONFLICT(run_id) DO UPDATE "
+                            "SET seen = excluded.seen, paused = COALESCE(?, paused)",
+                            (run_id, time.time(), int(bool(paused)), None if paused is None else int(bool(paused))))
+
+    def page_watch(self, run_id):
+        with self.lock:
+            row = self.db.execute("SELECT seen, paused FROM page_watch WHERE run_id = ?", (run_id,)).fetchone()
+        return {"seen": row["seen"], "paused": bool(row["paused"])} if row else {"seen": 0.0, "paused": False}
+
+    def add_page_request(self, request_id, run_id):
+        with self.lock, self.db:
+            self.db.execute("INSERT INTO page_requests (id, run_id, status, created_at) VALUES (?, ?, 'pending', ?)",
+                            (request_id, run_id, utc_now()))
+
+    def answer_page_request(self, run_id, request_id, ok, result):
+        """The page's answer; False if there is no such pending request."""
+        with self.lock, self.db:
+            cursor = self.db.execute("UPDATE page_requests SET status = 'done', ok = ?, result = ?, done_at = ? "
+                                     "WHERE id = ? AND run_id = ? AND status = 'pending'",
+                                     (int(bool(ok)), json.dumps(result if isinstance(result, dict) else {}), utc_now(),
+                                      request_id, run_id))
+        return cursor.rowcount == 1
+
+    def page_request(self, request_id):
+        with self.lock:
+            row = self.db.execute("SELECT * FROM page_requests WHERE id = ?", (request_id,)).fetchone()
+        if row is None:
+            return None
+        return {"status": row["status"], "ok": bool(row["ok"]), "result": json.loads(row["result"] or "{}")}
+
+    def close_page_request(self, request_id, status):
+        with self.lock, self.db:
+            self.db.execute("UPDATE page_requests SET status = ? WHERE id = ? AND status = 'pending'", (status, request_id))
 
     def get_setting(self, name, default=None):
         with self.lock:

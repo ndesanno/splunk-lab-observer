@@ -161,6 +161,29 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self._json(200, {"component": parts[2], "source": f"podman logs --tail 60 {parts[2]}", "checked_at": checked_at,
                              "log": text, "resources": store.latest(parts[2], "resources"),
                              "container": store.latest(parts[2], "container")})
+        elif len(parts) == 4 and parts[:2] == ["api", "components"] and parts[3] == "signin" and post:
+            # Sign the owner's view in as the account the AI tests with, so the owner watches the same session.
+            operator = self.server.assistant.operator if self.server.assistant else None
+            if parts[2] not in lab.web_components():
+                self._json(404, {"error": "unknown_component"})
+                return
+            if operator is None:
+                self._json(409, {"error": "No test account: run the lab's ./observer.sh operator first"})
+                return
+            try:
+                cookies = operator.web_session(parts[2])
+            except (OSError, RuntimeError, ValueError) as error:
+                self._json(502, {"error": str(error)[:200]})
+                return
+            body = json.dumps({"account": operator.username, "component": parts[2], "signed_in_at": utc_now()}).encode()
+            self.send_response(200)
+            for header in cookies:
+                self.send_header("Set-Cookie", COOKIE_ROOT_PATH.sub(lambda match: f"{match.group(1)}/lab/{parts[2]}/", header))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         elif len(parts) == 4 and parts[:2] == ["api", "components"] and parts[3] == "screens" and get:
             component = lab.component(parts[2])
             if component is None:
@@ -269,6 +292,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 live = assistant.runs.get(parts[1])
                 if live is not None:  # a page is watching, so the shared view can be used
                     live.page_seen = time.time()
+                elif run.record.get("origin") == "terminal" and run.record.get("status") == "running":
+                    self.server.store.page_watched(parts[1])  # Claude Code checks this before using the view
                 self._json(200, run.view(int(since) if since.isdigit() else 0))
         elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "messages" and post:
             body = self._read_json()
@@ -288,7 +313,9 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if body is None:
                 return
             run = assistant.runs.get(parts[1])
-            if run is None or not run.page_result(parts[3], body.get("ok"), body.get("result")):
+            accepted = run.page_result(parts[3], body.get("ok"), body.get("result")) if run is not None else \
+                self.server.store.answer_page_request(parts[1], parts[3], body.get("ok"), body.get("result"))
+            if not accepted:
                 self._json(409, {"error": "no_pending_request"})
                 return
             self._json(200, {"accepted": True})
@@ -297,7 +324,12 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if body is None:
                 return
             run = assistant.runs.get(parts[1])
-            if run is None or not run.control(body.get("action")):
+            action = body.get("action")
+            if run is None and action in {"pause", "takeover", "resume"} and self.server.store.run(parts[1]):
+                self.server.store.page_watched(parts[1], paused=action != "resume")  # a terminal session waits
+                self._json(200, {"paused": action != "resume"})
+                return
+            if run is None or not run.control(action):
                 self._json(409, {"error": "invalid_control"})
                 return
             self._json(200, {"paused": run.record.get("paused", False)})

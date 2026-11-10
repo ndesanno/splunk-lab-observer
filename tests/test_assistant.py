@@ -1,6 +1,7 @@
 """Claude runs against a fake Messages API: audited tools, shown screens, and approval-gated changes."""
 
 import json
+from http.client import HTTPConnection
 from pathlib import Path
 import os
 import stat
@@ -366,6 +367,72 @@ class TerminalSessionTest(unittest.TestCase):
 
     def assistant_key(self, server):
         server.assistant.key.save(KEY)
+
+    def test_terminal_actions_run_in_the_owner_page_signed_in_as_the_test_account(self):
+        import contextlib, io
+        self.terminal("start", "Shared view")
+        run_id = self.store.latest_run()["id"]
+        self.assertEqual(self.terminal("read", "p-sh1"), 1)  # no page is following the session yet
+
+        class WebOperator:
+            username = "lab_operator"
+
+            def web_session(self, component):
+                return ["splunkd_8000=abc; Path=/; HttpOnly", "splunkweb_csrf_token_8000=t; Path=/"]
+
+        router = start_router()
+        assistant = Assistant(self.lab, self.store, self.temp.name, operator=WebOperator())
+        server = start(create_server(("127.0.0.1", 0), f"http://127.0.0.1:{router.server_port}", lab=self.lab, store=self.store,
+                                     assistant=assistant))
+        port = server.server_port
+        try:
+            call(port, "GET", f"/observer/api/assistant/runs/{run_id}")  # the page polls the run
+            answered = []
+
+            def page():  # stands in for the owner's open page: carry out the pending request
+                for _ in range(100):
+                    _status, body = call(port, "GET", f"/observer/api/assistant/runs/{run_id}")
+                    pending = [item for item in body["events"] if item["type"] == "browser" and item["status"] == "pending"]
+                    if pending:
+                        item = pending[0]
+                        answered.append(item["payload"])
+                        call(port, "POST", f"/observer/api/assistant/runs/{run_id}/page/{item['request_id']}",
+                             {"ok": True, "result": {"url": "/lab/p-sh1/en-US/app/search/datasets", "title": "Datasets",
+                                                     "elements": [{"ref": "e1", "role": "link", "label": "Create"}],
+                                                     "text": "Datasets", "summary": "Datasets · 1 elements"}})
+                        return
+                    time.sleep(0.05)
+
+            worker = threading.Thread(target=page)
+            worker.start()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(self.terminal("click", "p-sh1", "e4", "--why", "Open Datasets"), 0)
+            worker.join()
+            self.assertEqual(answered, [{"component": "p-sh1", "why": "Open Datasets", "ref": "e4"}])
+            self.assertIn("e1 link: Create", output.getvalue())
+            step = [item for item in self.store.run(run_id)["events"] if item["type"] == "browser"][0]
+            self.assertEqual((step["status"], step["summary_url"]), ("done", "/en-US/app/search/datasets"))
+            self.assertEqual(call(port, "POST", f"/observer/api/assistant/runs/{run_id}/page/{step['request_id']}", {"ok": True})[0], 409)
+
+            status, body = call(port, "POST", f"/observer/api/assistant/runs/{run_id}/control", {"action": "pause"})
+            self.assertEqual((status, self.store.page_watch(run_id)["paused"]), (200, True))
+            call(port, "POST", f"/observer/api/assistant/runs/{run_id}/control", {"action": "resume"})
+            self.assertFalse(self.store.page_watch(run_id)["paused"])
+
+            connection = HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("POST", "/observer/api/components/p-sh1/signin", body="{}",
+                               headers={"Origin": f"http://127.0.0.1:{port}", "Content-Type": "application/json"})
+            response = connection.getresponse()
+            cookies = response.headers.get_all("Set-Cookie")
+            self.assertEqual((response.status, json.loads(response.read())["account"]), (200, "lab_operator"))
+            connection.close()
+            self.assertEqual(cookies, ["splunkd_8000=abc; Path=/lab/p-sh1/; HttpOnly", "splunkweb_csrf_token_8000=t; Path=/lab/p-sh1/"])
+            assistant.operator = None
+            self.assertEqual(call(port, "POST", "/observer/api/components/p-sh1/signin", {})[0], 409)
+            self.assertEqual(call(port, "POST", "/observer/api/components/p-uf/signin", {})[0], 404)
+        finally:
+            server.shutdown(); server.server_close(); router.shutdown(); router.server_close()
 
 
 @unittest.skipIf(assistant_module.anthropic is None, "the anthropic package is not installed")

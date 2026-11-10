@@ -12,14 +12,25 @@ session, opens each screen in the focused view, and keeps the trail with the in-
         --note "Overview lists the 8 forwarders with findings"
     python -m observer.terminal end "All three indexers restarted; cluster healthy."
 
+The owner watches the same Splunk session the work uses: `signin` signs the owner's focused view in
+as the lab_operator test account, and `read`, `click`, `type` and `select` are carried out by the
+owner's open observer page in that view, each element highlighted. They fail if no page is open.
+
+    python -m observer.terminal signin p-hq-sh1 /en-US/app/federation_pulse_hq/pulse_hq_overview
+    python -m observer.terminal read p-hq-sh1
+    python -m observer.terminal click p-hq-sh1 e12 --why "Open the Members tab"
+
 Commands never carry credentials; write only what the owner may see.
 """
 
 import argparse
+import json
+import secrets
 import sys
+import time
 from pathlib import Path
 
-from observer.assistant import Run
+from observer.assistant import PAGE_STALE_SECONDS, PAGE_TIMEOUT_SECONDS, Run, _screen_path
 from observer.coverage import CASES, Coverage
 from observer.store import DEFAULT_DATA_DIR, Store, utc_now
 
@@ -33,6 +44,50 @@ def current_run(store, data_dir):
     if record is None or record["status"] != "running":
         return None
     return Run(store, "", record=record)
+
+
+def ask_page(store, run, action, payload):
+    """Have the owner's open page do one action in its live view; wait for the reading it returns."""
+    if time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
+        raise RuntimeError("No observer page is following this session, so there is no shared view. "
+                           "Ask the owner to open the observer page.")
+    request_id = secrets.token_hex(4)
+    store.add_page_request(request_id, run.id)
+    item = run.event("browser", request_id=request_id, action=action, payload=payload, status="pending")
+    deadline = time.time() + PAGE_TIMEOUT_SECONDS
+    answer = None
+    while time.time() < deadline:
+        answer = store.page_request(request_id)
+        if answer and answer["status"] == "done":
+            break
+        time.sleep(0.4)
+    if not answer or answer["status"] != "done":
+        store.close_page_request(request_id, "expired")
+        run.update_event(item["seq"], status="expired")
+        raise RuntimeError("The owner's page did not answer within 15 minutes")
+    result = answer["result"]
+    run.update_event(item["seq"], status="done" if answer["ok"] else "failed", summary=result.get("summary"),
+                     done_at=utc_now(), summary_url=_screen_path(result.get("url")))
+    if not answer["ok"]:
+        raise RuntimeError(result.get("error") or "The page could not do that")
+    return result
+
+
+def format_reading(reading):
+    lines = [f"url: {reading.get('url')}", f"title: {reading.get('title')}"]
+    if reading.get("account"):
+        lines.append(f"signed in as: {reading['account']}")
+    if reading.get("omitted"):
+        lines.append(f"left out: {reading['omitted']}")
+    if reading.get("owner_took_over"):
+        lines.append("note: the owner took over the view before this ran")
+    if reading.get("login_page"):
+        lines.append("note: the view shows the Splunk sign-in page")
+    lines.append("elements:")
+    lines += [f"  {item['ref']} {item['role']}: {item['label']}" + (f" = {item['value']!r}" if item.get("value") else "")
+              for item in reading.get("elements", [])]
+    lines += ["text:", reading.get("text", "")]
+    return "\n".join(lines)
 
 
 def main(argv=None):
@@ -56,6 +111,25 @@ def main(argv=None):
     mark.add_argument("--steps", type=int, nargs="*", default=[], help="step numbers in this session that show it")
     mark.add_argument("--note", default="")
     mark.add_argument("--config-dir", type=Path, default=Path.home() / ".config" / "splunk-lab-observer")
+    signin = commands.add_parser("signin", help="sign the owner's view in as the test account and open a page")
+    signin.add_argument("component")
+    signin.add_argument("path", nargs="?", default="")
+    commands.add_parser("read", help="read the screen in the owner's view").add_argument("component")
+    click = commands.add_parser("click", help="click an element (a ref from read) in the owner's view")
+    click.add_argument("component")
+    click.add_argument("ref")
+    click.add_argument("--why", default="")
+    type_text = commands.add_parser("type", help="type into a field in the owner's view")
+    type_text.add_argument("component")
+    type_text.add_argument("ref")
+    type_text.add_argument("text")
+    type_text.add_argument("--enter", action="store_true")
+    type_text.add_argument("--why", default="")
+    select = commands.add_parser("select", help="choose an option in the owner's view")
+    select.add_argument("component")
+    select.add_argument("ref")
+    select.add_argument("value")
+    select.add_argument("--why", default="")
     commands.add_parser("end", help="close the session").add_argument("summary", nargs="?", default="")
     args = parser.parse_args(argv)
 
@@ -113,6 +187,22 @@ def main(argv=None):
                   note=args.note)
         if result != args.result:
             print(f"Stored as {result}: pass or fail needs --steps from this session", file=sys.stderr)
+    elif args.command in {"signin", "read", "click", "type", "select"}:
+        if args.command == "signin" and args.path and (not args.path.startswith("/en-US/") or ".." in args.path):
+            print("path must start with /en-US/", file=sys.stderr)
+            return 1
+        payload = {"component": args.component, "why": getattr(args, "why", "")}
+        payload.update({"signin": {"path": getattr(args, "path", "")}, "click": {"ref": getattr(args, "ref", None)},
+                        "type": {"ref": getattr(args, "ref", None), "text": getattr(args, "text", None),
+                                 "press_enter": getattr(args, "enter", False)},
+                        "select": {"ref": getattr(args, "ref", None), "value": getattr(args, "value", None)}}.get(args.command, {}))
+        try:
+            reading = ask_page(store, run, args.command, payload)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(format_reading(reading))
+        return 0
     elif args.command == "end":
         if args.summary:
             run.event("text", text=args.summary)

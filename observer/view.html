@@ -602,6 +602,12 @@
     document.body.append(h('div', {class: 'focus', 'data-id': component.id, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
       h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component), h('span', {class: 'muted'}, component.web_path || ''),
         h('span', {style: 'flex:1'}),
+        isWeb(component) && !history ? h('span', {class: 'muted', id: 'view-account', style: 'font-size:.8rem'}, signedIn.get(component.id) ? `Signed in as ${signedIn.get(component.id)}` : '') : null,
+        isWeb(component) && !history ? h('button', {type: 'button', title: 'Sign this view in as the account Claude tests with, so you see the same session', onclick: async event => {
+          event.target.disabled = true;
+          try { await signInView(component.id, ''); } catch (error) { alert(error.message); }
+          event.target.disabled = false;
+        }}, 'Use test account') : null,
         isWeb(component) ? h('a', {href: `${component.web_path}en-US/app/launcher/home`, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
         h('button', {type: 'button', onclick: () => openDrawer(component.id)}, 'Details'),
         h('button', {type: 'button', onclick: () => { focused = null; render(); }}, 'Close (Esc)')),
@@ -1150,7 +1156,29 @@
     for (let i = 0; i < 40 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
     return frame;
   }
+  // The observer signs in to Splunk Web on its side and gives this view the session; the password never comes here.
+  const signedIn = new Map();  // component -> account this view was signed in as
+  async function signInView(component, path) {
+    const result = await postWithReason(`/observer/api/components/${encodeURIComponent(component)}/signin`, {});
+    signedIn.set(component, result.account);
+    const target = byId(component);
+    let frame = document.querySelector('.focus iframe');
+    if (focused !== component || !frame) { showScreen(component, path); await sleep(500); frame = document.querySelector('.focus iframe'); }
+    const current = (() => { try { return frame.contentWindow.location.pathname.replace(target.web_path.replace(/\/$/, ''), ''); } catch (_error) { return ''; } })();
+    const next = path || (current && !/\/account\/(login|logout)/.test(current) ? current : '/en-US/app/launcher/home');
+    frame.src = target.web_path.replace(/\/$/, '') + next;
+    await sleep(800);
+    for (let i = 0; i < 80 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
+    const label = document.getElementById('view-account');
+    if (label) label.textContent = `Signed in as ${result.account}`;
+    return result.account;
+  }
   async function pageAction(action, payload) {
+    if (action === 'signin') {
+      const account = await signInView(payload.component, payload.path);
+      await sleep(1500);
+      return Object.assign(snapshot(document.querySelector('.focus iframe')), {account});
+    }
     const frame = await viewFor(payload.component);
     if (action === 'read') return snapshot(frame);
     const el = frame.contentDocument.querySelector(`[data-observer-ref="${CSS.escape(payload.ref)}"]`);
@@ -1277,7 +1305,7 @@
       }
       case 'browser': {
         const payload = item.payload || {};
-        const verb = {read: 'Read the screen', click: `Click ${payload.label ? `“${payload.label}”` : payload.ref}`,
+        const verb = {signin: `Signed your view in as the test account${payload.path ? ` and opened ${payload.path}` : ''}`, read: 'Read the screen', click: `Click ${payload.label ? `“${payload.label}”` : payload.ref}`,
           type: `Type “${payload.text}”${payload.press_enter ? ' + Enter' : ''} into ${payload.label ? `“${payload.label}”` : payload.ref}`,
           select: `Choose “${payload.value}” in ${payload.label ? `“${payload.label}”` : payload.ref}`}[item.action] || item.action;
         const tone = {done: 'ok', failed: 'bad', pending: 'warn'}[item.status] || 'warn';
@@ -1386,8 +1414,14 @@
         h('button', {class: 'small', type: 'button', onclick: () => setAssistantOpen(false)}, 'Close')),
       runPicker,
       h('div', {class: 'muted', style: 'font-size:.75rem'},
-        terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC, with its own access; you approve its actions there. This page follows a live session and opens each screen it shows.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
+        terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC; you approve its changes there. This page follows a live session: Claude Code signs your focused view in as the test account and reads and clicks in it, each element highlighted. Pause or Take over holds its next action.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
         run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
+    if (run && liveRun()) assistantHead.append(h('div', {class: 'row'},
+      pageRun.paused
+        ? h('button', {type: 'button', title: 'Let Claude act in the shared view again', onclick: () => controlRun('resume')}, 'Hand back to Claude')
+        : [h('button', {type: 'button', title: 'Hold Claude’s next action in the shared view', onclick: () => controlRun('pause')}, 'Pause'),
+           h('button', {type: 'button', title: 'Use the view yourself; Claude waits until you hand it back', onclick: () => controlRun('takeover')}, 'Take over')],
+      h('span', {class: 'muted', style: 'font-size:.75rem'}, pageRun.paused ? 'Claude’s next action waits for you.' : 'Claude acts in your focused view.')));
     if (run) assistantHead.append(runRecord(run));
     const nearBottom = trail.scrollHeight - trail.scrollTop - trail.clientHeight < 80;
     const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(item => {
@@ -1410,10 +1444,6 @@
       parts.push(promptInput, h('div', {class: 'row'},
         h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() && !terminalRun() ? 'Send follow-up' : 'Send'),
         activeRun() ? h('button', {class: 'danger', type: 'button', onclick: async () => { await post(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/stop`); fetchRun(run.id); }}, 'Stop') : null,
-        activeRun() ? (pageRun.paused
-          ? h('button', {type: 'button', title: 'Let Claude act in the shared view again', onclick: () => controlRun('resume')}, 'Hand back to Claude')
-          : [h('button', {type: 'button', title: 'Hold Claude’s next action in the shared view', onclick: () => controlRun('pause')}, 'Pause'),
-             h('button', {type: 'button', title: 'Use the view yourself; Claude waits and is told you took over', onclick: () => controlRun('takeover')}, 'Take over')]) : null,
         h('span', {class: 'muted', style: 'font-size:.75rem;flex:1'}, '⌘/Ctrl + Enter to send'),
         h('button', {class: 'small', type: 'button', title: `Key ${status.hint || ''} from ${status.source || ''}`, onclick: () => { if (confirm('Remove the saved Anthropic API key from the lab PC?')) saveKey(''); }}, 'Remove key')));
     }
