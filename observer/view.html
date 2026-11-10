@@ -1192,6 +1192,17 @@
       if (payload.press_enter) {
         for (const type of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true}));
       }
+    } else if (action === 'upload') {
+      // Put a package from the observer's packages folder into a file field, as if the owner had chosen it.
+      if (el.type !== 'file') throw new Error(`Element ${payload.ref} is not a file field`);
+      const response = await fetch(`/observer/api/packages/${encodeURIComponent(payload.file)}`, {cache: 'no-store'});
+      if (!response.ok) throw new Error(`No package ${payload.file} in the observer's packages folder`);
+      const view = el.ownerDocument.defaultView;
+      const transfer = new view.DataTransfer();
+      transfer.items.add(new view.File([await response.blob()], payload.file, {type: 'application/gzip'}));
+      el.files = transfer.files;
+      el.dispatchEvent(new Event('input', {bubbles: true}));
+      el.dispatchEvent(new Event('change', {bubbles: true}));
     } else if (action === 'select') {
       const option = [...el.options].find(item => item.value === payload.value || item.text.trim() === payload.value);
       if (!option) throw new Error(`No option ${payload.value}`);
@@ -1307,7 +1318,8 @@
         const payload = item.payload || {};
         const verb = {signin: `Signed your view in as the test account${payload.path ? ` and opened ${payload.path}` : ''}`, read: 'Read the screen', click: `Click ${payload.label ? `“${payload.label}”` : payload.ref}`,
           type: `Type “${payload.text}”${payload.press_enter ? ' + Enter' : ''} into ${payload.label ? `“${payload.label}”` : payload.ref}`,
-          select: `Choose “${payload.value}” in ${payload.label ? `“${payload.label}”` : payload.ref}`}[item.action] || item.action;
+          select: `Choose “${payload.value}” in ${payload.label ? `“${payload.label}”` : payload.ref}`,
+          upload: `Choose file ${payload.file} in ${payload.ref}`}[item.action] || item.action;
         const tone = {done: 'ok', failed: 'bad', pending: 'warn'}[item.status] || 'warn';
         const waiting = item.status === 'pending' && pageRun.paused;
         return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `🖱 ${verb}`),

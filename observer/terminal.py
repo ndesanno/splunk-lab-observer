@@ -130,6 +130,11 @@ def main(argv=None):
     select.add_argument("ref")
     select.add_argument("value")
     select.add_argument("--why", default="")
+    upload = commands.add_parser("upload", help="choose a package from the observer's packages folder in a file field")
+    upload.add_argument("component")
+    upload.add_argument("ref")
+    upload.add_argument("file", help="file name in <data dir>/packages, e.g. federation_pulse_spoke-100641.tgz")
+    upload.add_argument("--why", default="")
     commands.add_parser("end", help="close the session").add_argument("summary", nargs="?", default="")
     args = parser.parse_args(argv)
 
@@ -187,7 +192,7 @@ def main(argv=None):
                   note=args.note)
         if result != args.result:
             print(f"Stored as {result}: pass or fail needs --steps from this session", file=sys.stderr)
-    elif args.command in {"signin", "read", "click", "type", "select"}:
+    elif args.command in {"signin", "read", "click", "type", "select", "upload"}:
         if args.command == "signin" and args.path and (not args.path.startswith("/en-US/") or ".." in args.path):
             print("path must start with /en-US/", file=sys.stderr)
             return 1
@@ -195,7 +200,8 @@ def main(argv=None):
         payload.update({"signin": {"path": getattr(args, "path", "")}, "click": {"ref": getattr(args, "ref", None)},
                         "type": {"ref": getattr(args, "ref", None), "text": getattr(args, "text", None),
                                  "press_enter": getattr(args, "enter", False)},
-                        "select": {"ref": getattr(args, "ref", None), "value": getattr(args, "value", None)}}.get(args.command, {}))
+                        "select": {"ref": getattr(args, "ref", None), "value": getattr(args, "value", None)},
+                        "upload": {"ref": getattr(args, "ref", None), "file": getattr(args, "file", None)}}.get(args.command, {}))
         try:
             reading = ask_page(store, run, args.command, payload)
         except RuntimeError as error:

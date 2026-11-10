@@ -431,6 +431,25 @@ class TerminalSessionTest(unittest.TestCase):
             assistant.operator = None
             self.assertEqual(call(port, "POST", "/observer/api/components/p-sh1/signin", {})[0], 409)
             self.assertEqual(call(port, "POST", "/observer/api/components/p-uf/signin", {})[0], 404)
+
+            packages = self.store.data_dir / "packages"
+            packages.mkdir(exist_ok=True)
+            (packages / "app-1.tgz").write_bytes(b"\x1f\x8bpackage")
+            (packages / "notes.txt").write_text("not a package")
+            (self.store.data_dir / "outside.tgz").write_bytes(b"outside")
+
+            def fetch(name):
+                connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                connection.request("GET", f"/observer/api/packages/{name}")
+                response = connection.getresponse()
+                result = (response.status, response.read())
+                connection.close()
+                return result
+
+            self.assertEqual(fetch("app-1.tgz"), (200, b"\x1f\x8bpackage"))
+            self.assertEqual(fetch("notes.txt")[0], 404)
+            self.assertEqual(fetch("missing.tgz")[0], 404)
+            self.assertEqual(fetch("..%2Foutside.tgz")[0], 404)
         finally:
             server.shutdown(); server.server_close(); router.shutdown(); router.server_close()
 

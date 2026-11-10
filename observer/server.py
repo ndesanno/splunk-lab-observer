@@ -248,6 +248,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": status})
         elif parts[:2] == ["api", "assistant"] and self.server.assistant:
             self._assistant_route(parts[2:], query, get, post)
+        elif len(parts) == 3 and parts[:2] == ["api", "packages"] and get:
+            # App packages the AI may upload through Splunk Web in the owner's view: only .tgz/.spl files
+            # placed in the data directory's packages/ folder on this workstation.
+            folder = (store.data_dir / "packages").resolve()
+            target = (folder / parts[2]).resolve()
+            if target.parent != folder or target.suffix not in {".tgz", ".spl"} or not target.is_file():
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+            else:
+                self._send(200, target.read_bytes(), "application/gzip")
         elif len(parts) == 3 and parts[0] == "captures" and get and self.server.capture:
             capture_path = self.server.capture.path_for(f"{parts[1]}/{parts[2]}")
             if capture_path is None:
