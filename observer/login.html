@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Splunk Lab Observer</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 1rem; }
+    main { width: min(100%, 25rem); border: 1px solid #344154; border-radius: .6rem; background: #142136; padding: 1.5rem; }
+    h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+    p { color: #a8b5c7; margin: 0 0 1.4rem; }
+    label { display: block; margin-bottom: .35rem; }
+    input { box-sizing: border-box; width: 100%; padding: .7rem; border: 1px solid #69809a; border-radius: .35rem; background: #0b1220; color: white; font: inherit; }
+    button { margin-top: 1rem; width: 100%; padding: .7rem; border: 0; border-radius: .35rem; background: #5394e7; color: #081426; font: inherit; font-weight: 700; cursor: pointer; }
+    .error { color: #ffc0c0; margin: 0 0 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Splunk Lab Observer</h1>
+    <p>Sign in to view the lab from this device.</p>
+    <!-- error -->
+    <form method="post" action="/observer/login">
+      <label for="password">Observer password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>
