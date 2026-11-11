@@ -878,10 +878,10 @@
       const tickets = new Map();
       for (const check of data.checks) {
         if (checks.only && state(check) !== checks.only) continue;
-        const key = check.ticket ? `Ticket ${String(check.ticket).padStart(2, '0')}` : 'Other';
+        const key = check.ticket ? `Issue #${check.ticket}` : 'Other';
         tickets.set(key, [...(tickets.get(key) || []), check]);
       }
-      for (const [name, group] of [...tickets].sort((a, b) => a[0].localeCompare(b[0]))) {
+      for (const [name, group] of [...tickets].sort((a, b) => a[0].localeCompare(b[0], undefined, {numeric: true}))) {
         parts.push(h('h3', {}, name, ' ', h('span', {class: 'muted', style: 'font-weight:normal'}, `${group.filter(check => state(check) === 'pass').length} of ${group.length} passing`)));
         parts.push(h('table', {}, h('thead', {}, h('tr', {}, ['Check', 'Result', 'What was found', 'Checked', ''].map(text => h('th', {}, text)))),
           h('tbody', {}, group.map(check => h('tr', {},
