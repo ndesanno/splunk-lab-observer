@@ -98,6 +98,28 @@ class PodmanSplunkSource:
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response), source
 
+    def splunk_search(self, component, query, earliest, latest, max_count, app=None):
+        """A blocking one-shot search as the read-only account; returns result rows. With app, the
+        search runs in that app, where the app's own saved searches and macros are found."""
+        if app is not None and not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", app):
+            raise ValueError("invalid app")
+        endpoint = f"/servicesNS/{self.username}/{app}/search/jobs" if app else "/services/search/jobs"
+        source = f"splunkd {component}{endpoint} (oneshot) as {self.username}"
+        body = urllib.parse.urlencode({"search": query, "exec_mode": "oneshot", "earliest_time": earliest,
+                                       "latest_time": latest, "count": max_count, "output_mode": "json"}).encode()
+        request = urllib.request.Request(f"{self.router}/mgmt/{component}{endpoint}", data=body,
+                                         headers={"Authorization": self._authorization})
+        with urllib.request.urlopen(request, timeout=90) as response:
+            return json.load(response).get("results", []), source
+
+    def container_action(self, component, action):
+        """Start, stop, or restart one lab container. Only an owner-approved assistant step calls this."""
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError(action)
+        result = subprocess.run(["podman", action, component], capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip()[:300] or f"exit {result.returncode}")
+
     def web_status(self, component):
         try:
             with urllib.request.urlopen(f"{self.router}/lab/{component}/en-US/account/login", timeout=8) as response:
@@ -124,6 +146,70 @@ class PodmanSplunkSource:
         if result.returncode != 0:
             return {}
         return {item.get("name") or item.get("Name"): item for item in json.loads(result.stdout or "[]")}
+
+
+class OperatorAccount:
+    """The lab_operator account (admin role), used only for splunkd changes the owner approves."""
+
+    def __init__(self, config_file):
+        path = Path(config_file)
+        if path.stat().st_mode & 0o077:
+            raise ValueError("The Splunk operator credential file must be private to its owner")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        self.username = config["username"]
+        self._authorization = "Basic " + base64.b64encode(f"{config['username']}:{config['password']}".encode()).decode()
+        self.router = config.get("router", "http://127.0.0.1:8190").rstrip("/")
+
+    def request(self, component, method, path, params):
+        """POST or DELETE one splunkd endpoint; returns the HTTP status and the JSON reply."""
+        query = urllib.parse.urlencode({"output_mode": "json"})
+        data = urllib.parse.urlencode(params).encode() if method == "POST" else None
+        request = urllib.request.Request(f"{self.router}/mgmt/{component}{path}?{query}", data=data, method=method,
+                                         headers={"Authorization": self._authorization})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as error:
+            body = error.read()
+            try:
+                reply = json.loads(body or b"{}")
+            except ValueError:
+                reply = {"text": body.decode("utf-8", errors="replace")[:500]}
+            return error.code, reply
+
+
+    def web_session(self, component):
+        """Sign in to a component's Splunk Web as this account, from the workstation. Returns Splunk's
+        Set-Cookie headers for the session, so the owner's view can use it; the password stays here."""
+        base = f"{self.router}/lab/{component}/en-US/account/login"
+        cookies = {}
+
+        def keep(response):
+            headers = response.headers.get_all("Set-Cookie") or []
+            for header in headers:
+                name, _, rest = header.partition("=")
+                cookies[name.strip()] = rest.split(";", 1)[0]
+            return headers
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(base, timeout=30) as response:
+            keep(response)
+        username, password = base64.b64decode(self._authorization.split()[1]).decode().split(":", 1)
+        data = urllib.parse.urlencode({"username": username, "password": password, "cval": cookies.get("cval", ""),
+                                       "set_has_logged_in": "false"}).encode()
+        request = urllib.request.Request(base, data=data, headers={
+            "Cookie": "; ".join(f"{name}={value}" for name, value in cookies.items())})
+        with opener.open(request, timeout=30) as response:
+            reply = json.loads(response.read() or b"{}")
+            headers = keep(response)
+        if reply.get("status") != 0 or not any(header.startswith("splunkd_") for header in headers):
+            raise RuntimeError(f"Splunk Web on {component} did not accept the {self.username} sign-in")
+        return [header for header in headers if not header.startswith(("cval=", "splunkweb_uid="))]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 def screens_from_nav(app):

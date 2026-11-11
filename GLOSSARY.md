@@ -33,3 +33,24 @@ A bounded guided walkthrough, test, or investigation with recorded steps, observ
 
 **Fixture**:
 Disposable lab data or configuration created to exercise behavior during a test run.
+
+**Approval**:
+The owner's decision on one state-changing step an AI asks to take, shown with its reason, expected effect, and cleanup. Without it the step does not run.
+
+**Model-bound evidence**:
+The exact text a tool returned to the hosted AI model during a run, kept with the step so the owner can see everything that left the workstation.
+
+**Coverage mark**:
+The recorded status of one case (normal, empty, incorrect, permission, error, recovery) of one app feature or screen. It counts as tested only with a pass or fail verdict and the run steps that show it.
+
+**Check**:
+A stored comparison between what an app shows and an independent reading of the same fact, run by the observer with the read-only account and without an AI model. Its result is pass, fail or unverified.
+
+**Reading**:
+One value taken for a check: a search result, an installed version, or a fixed value an app rule requires. Each reading is a step of the round's run.
+
+**Independent reading**:
+The reading a check compares against. It comes from Splunk itself and never passes through the app under test.
+
+**Round**:
+One run of every check, or of the checks the owner picked. It is kept as a run with origin `check`.

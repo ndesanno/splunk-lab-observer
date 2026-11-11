@@ -35,7 +35,9 @@
     .picker { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); padding: .6rem .8rem; margin-bottom: .8rem; columns: 17rem; column-gap: 1.5rem; }
     .picker section { break-inside: avoid; margin-bottom: .6rem; }
     .picker h3 { margin: 0 0 .3rem; font-size: .85rem; color: var(--muted); font-weight: 600; }
-    .picker label { display: flex; gap: .4rem; align-items: center; font-size: .88rem; padding: .1rem 0; }
+    .picker label { display: flex; gap: .4rem; align-items: center; font-size: .88rem; padding: .15rem 0; }
+    .picker .pick-name { flex: 1; min-width: 0; }
+    .picker .pick-host { display: block; font-size: .72rem; }
     .wall[hidden], [hidden] { display: none !important; }
     .wall { display: grid; gap: .8rem; grid-template-columns: repeat(var(--columns, 3), minmax(0, 1fr)); }
     .tile { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
@@ -53,6 +55,12 @@
     .focus { position: fixed; inset: 0; z-index: 20; background: rgba(5, 9, 18, .92); display: flex; flex-direction: column; padding: 1rem; gap: .5rem; }
     .focus .tile-body { flex: 1; aspect-ratio: auto; border: 1px solid var(--line); border-radius: .5rem; }
     .focus-main { flex: 1; min-height: 0; display: flex; gap: .6rem; }
+    /* A live tile is focused where it is: moving its frame in the document would reload the Splunk page. */
+    .focus-slot { flex: 1; min-width: 0; }
+    .tile.focused { position: fixed; z-index: 21; margin: 0; border-radius: .5rem; }
+    .tile.focused .tile-head, .tile.focused .tile-foot { display: none; }
+    .tile.focused .tile-body { flex: 1; aspect-ratio: auto; border-radius: .5rem; }
+    .view-path { font-family: ui-monospace, monospace; font-size: .8rem; max-width: 34rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .screens { width: 17rem; flex: none; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; padding: .5rem; }
     .screens input { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .35rem; margin-bottom: .4rem; }
     .screens h4 { margin: .6rem 0 .2rem; font-size: .78rem; color: var(--muted); font-weight: 600; }
@@ -79,12 +87,72 @@
     .fact-source { color: var(--muted); font-size: .75rem; }
     .notice { border: 1px solid #6d5a1d; background: #2b2410; color: var(--warn); border-radius: .4rem; padding: .5rem .7rem; font-size: .85rem; margin-bottom: .7rem; }
     @media (max-width: 900px) { .wall { grid-template-columns: minmax(0, 1fr) !important; } }
+    /* architecture */
+    .arch { position: relative; display: grid; grid-template-columns: 9rem repeat(3, minmax(13rem, 1fr)); gap: .7rem 3rem; min-width: 62rem; padding-right: 5rem; align-items: start; }
+    .arch-scroll { overflow-x: auto; padding-bottom: .5rem; }
+    .arch-head { color: var(--muted); font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .arch-site { font-weight: 600; align-self: center; }
+    .arch-site small { display: block; color: var(--muted); font-weight: 400; font-size: .75rem; }
+    .arch-cell { display: flex; flex-direction: column; gap: .45rem; align-items: stretch; position: relative; z-index: 1; padding: .2rem 0; }
+    .arch-row-line { grid-column: 1 / -1; border-top: 1px solid #1d2a3d; }
+    .cluster { border: 1px dashed #5d7898; border-radius: .55rem; padding: .35rem .45rem .45rem; background: rgba(20, 36, 60, .55); display: flex; flex-direction: column; gap: .3rem; }
+    .cluster-title { font-size: .75rem; color: #b9cbe2; font-weight: 600; }
+    .cluster-members { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .node { border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); padding: .25rem .45rem; font-size: .78rem; cursor: pointer; text-align: left; color: inherit; flex: 1 1 8rem; }
+    .node:hover { border-color: #8fb8e6; }
+    .node .node-host { display: block; color: var(--muted); font-size: .68rem; }
+    .node .badge { font-size: .62rem; margin-top: .15rem; }
+    .node.compact { flex: 1 1 6.5rem; }
+    .arch-cell > .node, .arch-cell > .cluster { flex: none; }
+    .arch-links { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: visible; }
+    .legend { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; font-size: .8rem; color: var(--muted); margin: .2rem 0 .8rem; }
+    .legend svg { vertical-align: middle; margin-right: .3rem; }
+    /* coverage */
+    .cov-apps { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .7rem; }
+    .cov-versions { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); margin-bottom: .8rem; }
+    .cov-grid td.case { text-align: center; white-space: nowrap; padding: .25rem .3rem; }
+    .cov-grid td.case button { font-size: .72rem; padding: .05rem .4rem; border-radius: 1rem; background: transparent; border: 1px dashed #3a4c66; color: var(--muted); }
+    .cov-grid td.case button.pass { background: var(--ok-bg); color: var(--ok); border: 0; }
+    .cov-grid td.case button.fail { background: var(--bad-bg); color: var(--bad); border: 0; }
+    .cov-grid td.case button.unverified { background: var(--warn-bg); color: var(--warn); border: 0; }
+    .cov-grid td.case button.na { background: #26344a; color: #d5deea; border: 0; }
+    .cov-grid tr.child td:first-child { padding-left: 1.4rem; }
+    .cov-grid .kind { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+    .cov-form { display: grid; gap: .5rem; }
+    .cov-form select { background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .35rem; }
+    /* assistant */
+    :root { --assistant-width: min(30rem, 100vw); }
+    body.with-assistant { padding-right: var(--assistant-width); }
+    body.with-assistant .focus { right: var(--assistant-width); }
+    .assistant { position: fixed; top: 0; right: 0; bottom: 0; width: var(--assistant-width); z-index: 25; background: #0e1828; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+    .assistant-head { padding: .6rem .8rem; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: .4rem; }
+    .assistant-head select { max-width: 100%; }
+    .trail { flex: 1; min-height: 0; overflow: auto; padding: .7rem .8rem; display: flex; flex-direction: column; gap: .5rem; font-size: .88rem; }
+    .step { border-radius: .45rem; padding: .45rem .6rem; background: #111c2e; border: 1px solid #243246; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .step.you { background: #1d3150; border-color: #33557f; align-self: flex-end; max-width: 90%; }
+    .step.claude { background: transparent; border: 0; padding: .1rem .1rem; }
+    .step.tool, .step.display { font-size: .8rem; white-space: normal; }
+    .step.display { border-color: #3d5f8a; background: #10213a; }
+    .step.error { border-color: #7b3b3b; background: #2a1414; color: var(--bad); }
+    .step.approval { border: 1px solid #a1842c; background: #2b2410; white-space: normal; }
+    .step.approval dl { margin: .3rem 0; display: grid; grid-template-columns: max-content 1fr; gap: .15rem .6rem; }
+    .step.approval dt { color: var(--muted); }
+    .step.approval dd { margin: 0; }
+    .step details summary { cursor: pointer; color: var(--muted); }
+    .step pre { white-space: pre-wrap; max-height: 16rem; overflow: auto; background: #070c16; padding: .4rem; border-radius: .3rem; font-size: .72rem; margin: .3rem 0 0; }
+    .thinking { color: var(--muted); font-size: .8rem; }
+    .composer { border-top: 1px solid var(--line); padding: .6rem .8rem; display: flex; flex-direction: column; gap: .4rem; }
+    .composer textarea, .assistant input[type=password], .assistant input[type=text] { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .45rem; }
+    button.primary { background: #2f5d8f; border-color: #8fb8e6; }
+    button.danger { background: #5c2626; border-color: #b05a5a; }
+    @media (max-width: 900px) { body.with-assistant { padding-right: 0; } }
   </style>
 </head>
 <body>
   <header>
     <div><h1>Splunk Lab Observer</h1><div class="subtitle" id="summary">Loading the lab…</div></div>
     <div class="row">
+      <button id="assistant-toggle" type="button" title="Ask Claude about the lab and watch it work here">Ask Claude</button>
       <button id="discover" type="button" title="Discover components and relationships now">Discover now</button>
       <button id="capture" type="button" title="Take new screen previews of every Splunk Web">Capture previews</button>
       <form id="logout" method="post" action="/observer/logout" hidden><button type="submit">Sign out</button></form>
@@ -92,6 +160,9 @@
   </header>
   <nav role="tablist">
     <button role="tab" data-tab="wall" aria-selected="true">Wall</button>
+    <button role="tab" data-tab="architecture" aria-selected="false">Architecture</button>
+    <button role="tab" data-tab="coverage" aria-selected="false">Coverage</button>
+    <button role="tab" data-tab="checks" aria-selected="false">Checks</button>
     <button role="tab" data-tab="overview" aria-selected="false">Overview</button>
     <button role="tab" data-tab="changes" aria-selected="false">Changes</button>
   </nav>
@@ -118,7 +189,7 @@
       else if (key === 'style') node.setAttribute('style', value);
       else node.setAttribute(key, value === true ? '' : value);
     }
-    for (const child of children.flat()) {
+    for (const child of children.flat(Infinity)) {
       if (child === null || child === undefined || child === false) continue;
       node.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
@@ -145,6 +216,48 @@
   const byId = id => lab && lab.components.find(item => item.id === id);
   const displayName = component => component.owner_name || component.id;
   const isWeb = component => Boolean(component.web_path);
+  const HOME = '/en-US/app/launcher/home';
+  const baseOf = component => component.web_path.replace(/\/$/, '');
+  const store = {
+    get(key) { try { return localStorage.getItem(key) || ''; } catch (_error) { return ''; } },
+    set(key, value) { try { localStorage.setItem(key, value); } catch (_error) { /* storage unavailable */ } },
+  };
+  // Where a live view is now, as a path inside its Splunk Web ('' while loading or on another site).
+  function framePath(frame, component) {
+    try {
+      const where = frame.contentWindow.location;
+      const path = where.pathname + where.search;
+      return path.startsWith(baseOf(component) + '/') ? path.slice(baseOf(component).length) : '';
+    } catch (_error) { return ''; }
+  }
+  const worthKeeping = path => path && !/\/account\/(login|logout)/.test(path);
+  // A live view opens on the screen it last showed, not on Splunk's heavy home page every time.
+  function liveFrame(component) {
+    const remembered = store.get(`screen:${component.id}`);
+    const frame = h('iframe', {src: baseOf(component) + (worthKeeping(remembered) ? remembered : HOME), title: `Live Splunk Web of ${displayName(component)}`});
+    frame.addEventListener('load', () => {
+      const path = framePath(frame, component);
+      if (worthKeeping(path)) store.set(`screen:${component.id}`, path);
+      checkCaching(frame, component);
+      updateViewPath();
+    });
+    return frame;
+  }
+  // Without a trusted certificate a browser keeps nothing: every Splunk page downloads all its files again.
+  let cachingOff = false;
+  function checkCaching(frame, component) {
+    try {
+      const files = frame.contentWindow.performance.getEntriesByType('resource').filter(item => item.name.includes('/static/@') && item.decodedBodySize > 0);
+      if (files.length < 10) return;
+      const seen = store.get(`loaded:${component.id}`);
+      store.set(`loaded:${component.id}`, '1');
+      const before = cachingOff;
+      if (files.some(item => item.transferSize === 0)) cachingOff = false;
+      else if (seen) cachingOff = true;
+      if (before !== cachingOff) render();
+    } catch (_error) { /* timing not available */ }
+  }
+  const focusFrame = () => document.querySelector('.tile.focused iframe, .focus iframe');
 
   function stateBadge(component) {
     const status = component.status || {};
@@ -160,6 +273,67 @@
     const docker = container && container.health;
     return h('span', {class: `badge ${docker === 'unhealthy' ? 'bad' : 'ok'}`, title: 'Container state from podman ps'}, docker ? `running, ${docker}` : 'running');
   }
+  // A plain-English description built from discovered roles, clusters, and relationships.
+  function siteOf(component) {
+    const group = lab.groups.find(item => item.members.includes(component.id) && item.label);
+    if (group) return group.label;
+    const token = component.id.split('-')[1];
+    return token && !['fwd', 'lab', 'observer'].includes(token) ? token : null;
+  }
+  function siteName(site) {
+    if (!site) return '';
+    if (site === 'mgmt') return 'Management';
+    return site.length <= 3 ? site.toUpperCase() : site[0].toUpperCase() + site.slice(1);
+  }
+  function describeTargets(ids) {
+    const group = ids.length > 1 && lab.groups.find(item => ids.every(id => item.members.includes(id)));
+    if (group) return groupName(group);
+    return ids.map(id => byId(id) ? plainName(byId(id), true) : id).join(', ');
+  }
+  function groupName(group) {
+    return `${siteName(group.label)} ${group.type === 'indexer_cluster' ? 'indexer cluster' : 'search head cluster'}`.trim();
+  }
+  function plainName(component, short) {
+    const roles = new Set((component.facts.server_roles || {}).value || []);
+    const site = siteName(siteOf(component));
+    const number = (component.id.match(/(\d+)$/) || [])[1];
+    const at = site ? `${site} ` : '';
+    const outgoing = type => lab.relationships.filter(rel => rel.from === component.id && rel.type === type).map(rel => rel.to);
+    const incoming = type => lab.relationships.filter(rel => rel.to === component.id && rel.type === type);
+    const image = (component.facts.image || {}).value || '';
+    const version = (image.split(':')[1] || '');
+    const federated = incoming('federated search provider').length ? ' (federated search provider for HQ)' : '';
+    let name;
+    if (component.kind === 'splunk_enterprise') {
+      if (roles.has('cluster_manager')) name = `${at}indexer cluster manager`;
+      else if (roles.has('shc_deployer')) name = `${at}search head cluster deployer`;
+      else if (roles.has('shc_member') || roles.has('shc_captain')) name = `${at}search head${number ? ` ${number}` : ''}${roles.has('shc_captain') && !short ? ' (cluster captain)' : ''}`;
+      else if (roles.has('cluster_peer')) name = `${at}indexer${number ? ` ${number}` : ''}`;
+      else if (roles.has('heavyweight_forwarder')) name = `Heavy forwarder, Splunk ${(component.facts.splunk_version || {}).value || version}`;
+      else if (roles.has('indexer') && roles.has('search_head')) name = `${at}standalone search head and indexer`;
+      else if (roles.has('indexer')) name = `${at}standalone indexer${short ? '' : federated}`;
+      else if (roles.has('search_head')) name = `${at}standalone search head`;
+      else name = `${at}Splunk Enterprise instance`;
+      if (roles.has('heavyweight_forwarder') && !short) {
+        const targets = outgoing('sends data to');
+        if (targets.length) name += `, sends to ${describeTargets(targets)}`;
+      }
+    } else if (component.kind === 'universal_forwarder') {
+      name = `${at}universal forwarder${version ? ` ${version}` : ''}`;
+      const targets = outgoing('sends data to');
+      const managers = outgoing('discovers indexers through');
+      const cluster = managers.length && lab.groups.find(group => group.manager === managers[0]);
+      if (targets.length && !short) name += `, sends to ${describeTargets(targets)}`;
+      else if (cluster && !short) name += `, sends to ${groupName(cluster)} (found through its manager)`;
+    } else if (component.kind === 'load_balancer') {
+      const targets = outgoing('load balances');
+      name = targets.length ? `Load balancer for the ${describeTargets(targets)}` : `${at}load balancer`;
+      if (!short && incoming('federated search provider').length) name += ' (HQ federated search entry point)';
+    } else if (component.kind === 'data_generator') name = `${at}test data generator`;
+    else if (component.kind === 'observer_router') name = 'Observer router (connects this page to Splunk)';
+    else name = `${component.id.replace(/^p-/, '').split('-').join(' ')} container`;
+    return name[0].toUpperCase() + name.slice(1);
+  }
   function kindLabel(kind) {
     return {splunk_enterprise: 'Splunk Enterprise', universal_forwarder: 'Universal forwarder', load_balancer: 'Load balancer',
       data_generator: 'Data generator', observer_router: 'Observer router', container: 'Container'}[kind] || kind;
@@ -174,9 +348,17 @@
   }
 
   // --- data -------------------------------------------------------------------------
+  let labTag = null;
+  let addressRead = false;
   async function refresh() {
     try {
-      lab = await api('/observer/api/lab');
+      const response = await fetch('/observer/api/lab', {cache: 'no-store', headers: labTag ? {'If-None-Match': labTag} : {}});
+      if (response.status === 401) { window.location.assign('/observer/login'); return; }
+      if (response.status === 304) return;  // nothing new was recorded: leave the page as it is
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      labTag = response.headers.get('ETag');
+      lab = await response.json();
+      if (!addressRead) { addressRead = true; readAddress(); }  // before the first render rewrites the address
       document.getElementById('logout').hidden = !lab.login_required;
       if (!layout.tiles.length && !savedLayout) defaultLayout();
       document.getElementById('summary').textContent =
@@ -212,17 +394,37 @@
   // The wall stays in the page while other tabs show, and its tiles are never moved in the
   // document: moving an iframe reloads it, so order comes from CSS and only headers,
   // previews, and footers are rebuilt on refresh.
-  const panes = {wall: h('div', {}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
+  const panes = {wall: h('div', {}), architecture: h('div', {hidden: true}), coverage: h('div', {hidden: true}), checks: h('div', {hidden: true}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
   const wallTop = h('div', {});
   const grid = h('div', {class: 'wall'});
   const tileNodes = new Map();  // component id -> {node, live}
   panes.wall.append(wallTop, grid);
-  document.getElementById('main').append(panes.wall, panes.overview, panes.changes);
+  document.getElementById('main').append(panes.wall, panes.architecture, panes.coverage, panes.checks, panes.overview, panes.changes);
+
+  // The focused view and tab are kept in the address, so a reload or a bookmark comes back to them.
+  function writeAddress() {
+    const parts = [tab !== 'wall' ? `tab=${tab}` : '', focused ? `focus=${encodeURIComponent(focused)}` : ''].filter(Boolean);
+    const hash = parts.length ? `#${parts.join('&')}` : '';
+    if (window.location.hash !== hash) window.history.replaceState(null, '', window.location.pathname + hash);
+  }
+  function readAddress() {
+    const values = new URLSearchParams(window.location.hash.slice(1));
+    if (values.get('tab') in panes) tab = values.get('tab');
+    if (values.get('focus') && byId(values.get('focus'))) focused = values.get('focus');
+  }
+  // A live tile that is focused stays in the wall's document and is laid over the page.
+  const focusedInPlace = () => { const entry = focused && tileNodes.get(focused); return Boolean(entry && entry.live && !history); };
 
   function render() {
+    if (focused && !byId(focused)) focused = null;
+    if (focused && layout.tiles.some(tile => tile.id === focused && tile.live) && !history) tab = 'wall';  // its tile lives in the wall
+    writeAddress();
     for (const button of document.querySelectorAll('nav button')) button.setAttribute('aria-selected', String(button.dataset.tab === tab));
     for (const [name, pane] of Object.entries(panes)) pane.hidden = name !== tab;
     renderWall();
+    if (tab === 'architecture') { panes.architecture.replaceChildren(renderArchitecture()); requestAnimationFrame(drawArchitectureLinks); }
+    if (tab === 'coverage') renderCoverage();
+    if (tab === 'checks') renderChecks();
     if (tab === 'overview') panes.overview.replaceChildren(renderOverview());
     if (tab === 'changes') panes.changes.replaceChildren(renderChanges());
     renderFocus();
@@ -243,6 +445,10 @@
         const tiles = allWebTiles().map(tile => ({id: tile.id, live: live.has(tile.id)}));
         const extra = layout.tiles.filter(tile => !tiles.some(item => item.id === tile.id));
         layout.tiles = tiles.concat(extra); render(); }}, `Show all Splunk screens (${lab.components.filter(isWeb).length})`),
+      lab.test_account && live ? h('button', {type: 'button', title: `Sign every live view in as ${lab.test_account}, the account Claude tests with`, onclick: async event => {
+        event.target.disabled = true;
+        try { await signInAll(); } catch (error) { alert(error.message); }
+        render(); }}, `Sign in live views as ${lab.test_account}`) : null,
       h('button', {type: 'button', onclick: saveLayout}, layoutDirty() ? 'Save layout' : 'Layout saved'),
       savedLayout ? h('button', {type: 'button', onclick: async () => { await loadLayout(); render(); }, disabled: !layoutDirty()}, 'Restore saved') : null,
       h('span', {class: 'muted'}, savedLayout ? ['Saved ', stamp(savedLayout.saved_at)] : 'Not saved yet'),
@@ -256,6 +462,8 @@
         `A preview more than ${Math.round(history.data.missing_capture_after_seconds / 60)} minutes old, or whose file has expired, is marked missing.`,
         h('details', {}, h('summary', {}, `${changes.length} change(s) within 30 minutes of this time`), changesTable(changes, true))));
     }
+    if (cachingOff) wrapper.append(h('div', {class: 'notice'}, 'Your browser is downloading Splunk’s files again on every page instead of keeping them. ',
+      'That happens when the observer’s certificate is not trusted on this computer: trust cert.pem in Keychain Access (see the README), then reload.'));
     if (live > MAX_LIVE && !history) wrapper.append(h('div', {class: 'notice'}, `${live} live views are open. Each is a full Splunk page in your browser; more than ${MAX_LIVE} may slow it down. Switch some to previews.`));
     if (pickerOpen) wrapper.append(renderPicker());
     if (!layout.tiles.length) wrapper.append(h('p', {class: 'muted'}, 'No views selected. Use “Choose views” to add components.'));
@@ -267,7 +475,7 @@
       if (!component) return;
       wanted.add(tile.id);
       const view = history ? historical(component) : component;
-      const live = !history && tile.live && focused !== tile.id && isWeb(component);
+      const live = !history && tile.live && isWeb(component);
       let entry = tileNodes.get(tile.id);
       if (entry && entry.live !== live) { entry.node.remove(); entry = null; }
       if (!entry) {
@@ -280,6 +488,12 @@
       updateTile(entry, view, tile, index);
     });
     for (const [id, entry] of tileNodes) if (!wanted.has(id)) { entry.node.remove(); tileNodes.delete(id); }
+    for (const [id, entry] of tileNodes) {
+      const inPlace = id === focused && focusedInPlace();
+      entry.node.classList.toggle('focused', inPlace);
+      entry.node.draggable = !inPlace;
+      if (!inPlace) entry.node.removeAttribute('style'), entry.node.style.order = layout.tiles.findIndex(tile => tile.id === id);
+    }
   }
 
   function historical(component) {
@@ -321,13 +535,13 @@
     for (const group of lab.groups) {
       const members = group.members.filter(byId);
       members.forEach(id => seen.add(id));
-      const title = group.type === 'indexer_cluster' ? `Indexer cluster ${group.label || ''} (manager ${group.manager})` : `Search head cluster ${group.label || ''}`;
-      sections.push([title, members]);
+      sections.push([groupName(group), members]);
     }
     const rest = lab.components.filter(item => !seen.has(item.id));
     for (const kind of ['splunk_enterprise', 'universal_forwarder', 'load_balancer', 'data_generator', 'observer_router', 'container']) {
       const members = rest.filter(item => item.kind === kind).map(item => item.id);
-      if (members.length) sections.push([kindLabel(kind) + (kind === 'splunk_enterprise' ? ' (other)' : ''), members]);
+      if (members.length) sections.push([{splunk_enterprise: 'Other Splunk servers', universal_forwarder: 'Universal forwarders',
+        load_balancer: 'Load balancers', data_generator: 'Test data generators', observer_router: 'Observer', container: 'Other containers'}[kind], members]);
     }
     return sections;
   }
@@ -341,7 +555,8 @@
           h('input', {type: 'checkbox', checked: Boolean(tile), onchange: event => {
             if (event.target.checked) layout.tiles.push({id, live: false}); else layout.tiles = layout.tiles.filter(item => item.id !== id);
             render(); }}),
-          displayName(component), ' ', stateBadge(component), isWeb(component) ? '' : h('span', {class: 'muted'}, ' console'));
+          h('span', {class: 'pick-name'}, component.owner_name || plainName(component),
+            h('span', {class: 'muted pick-host'}, component.id, isWeb(component) ? '' : ' · console')), stateBadge(component));
       }))));
   }
 
@@ -378,7 +593,8 @@
       entry.node.append(head, body, foot);
     }
   }
-  const liveFoot = component => h('div', {class: 'tile-foot'}, `Live · ${component.web_path} · sign in with your own lab account`);
+  const liveFoot = component => h('div', {class: 'tile-foot'}, `Live · ${component.web_path} · `,
+    signedIn.get(component.id) ? `signed in as ${signedIn.get(component.id)}` : 'sign in with your own lab account');
 
   function tileContent(component, live) {
     const body = h('div', {class: 'tile-body'});
@@ -408,7 +624,7 @@
       foot = h('div', {class: 'tile-foot'}, 'Console: podman logs and stats');
       loadConsole(component.id, consoleNode, foot);
     } else if (live) {
-      body.append(h('iframe', {src: `${component.web_path}en-US/app/launcher/home`, title: `Live Splunk Web of ${displayName(component)}`}));
+      body.append(liveFrame(component));
       foot = liveFoot(component);
     } else {
       const preview = (component.status || {}).preview;
@@ -426,6 +642,12 @@
   }
 
   function layoutFrames() {
+    const slot = document.querySelector('.focus-slot');
+    const tile = document.querySelector('.tile.focused');
+    if (slot && tile) {
+      const box = slot.getBoundingClientRect();
+      Object.assign(tile.style, {top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px`});
+    }
     for (const frame of document.querySelectorAll('.tile-body iframe')) {
       const box = frame.parentElement.getBoundingClientRect();
       if (!box.width) continue;
@@ -462,23 +684,56 @@
 
   function renderFocus() {
     const existing = document.querySelector('.focus');
-    if (existing && existing.dataset.id === focused) return;
+    const mode = focusedInPlace() ? 'tile' : history ? 'history' : 'own';
+    if (existing && existing.dataset.id === focused && existing.dataset.mode === mode) return;
     existing?.remove();
     const component = focused && byId(focused);
     if (!component) return;
-    const view = history ? historical(component) : component;
-    const body = tileContent(view, isWeb(component) && !history)[0];
+    const live = isWeb(component) && !history;
     const main = h('div', {class: 'focus-main'});
-    if (isWeb(component) && !history) main.append(screenList(component, body.querySelector('iframe')));
-    main.append(body);
-    document.body.append(h('div', {class: 'focus', 'data-id': component.id, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
-      h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component), h('span', {class: 'muted'}, component.web_path || ''),
+    let frame = null;
+    if (mode === 'tile') {
+      frame = tileNodes.get(focused).node.querySelector('iframe');
+      main.append(screenList(component, frame), h('div', {class: 'focus-slot'}));
+    } else {
+      const body = tileContent(history ? historical(component) : component, live)[0];
+      frame = body.querySelector('iframe');
+      if (live) main.append(screenList(component, frame));
+      main.append(body);
+    }
+    const act = work => () => { try { work(focusFrame().contentWindow); } catch (_error) { /* the view is elsewhere */ } };
+    document.body.append(h('div', {class: 'focus', 'data-id': component.id, 'data-mode': mode, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
+      h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component),
+        live ? h('button', {type: 'button', class: 'small', title: 'Back in this view', onclick: act(view => view.history.back())}, '←') : null,
+        live ? h('button', {type: 'button', class: 'small', title: 'Reload this view', onclick: act(view => view.location.reload())}, '⟳') : null,
+        live ? h('span', {class: 'muted view-path', id: 'view-path', title: 'Where this view is now'}, component.web_path) : h('span', {class: 'muted'}, component.web_path || ''),
         h('span', {style: 'flex:1'}),
-        isWeb(component) ? h('a', {href: `${component.web_path}en-US/app/launcher/home`, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
+        live ? h('span', {class: 'muted', id: 'view-account', style: 'font-size:.8rem'}, signedIn.get(component.id) ? `Signed in as ${signedIn.get(component.id)}` : '') : null,
+        live ? h('button', {type: 'button', title: 'Sign this view in as the account Claude tests with, so you see the same session', onclick: async event => {
+          event.target.disabled = true;
+          try { await signInView(component.id, ''); } catch (error) { alert(error.message); }
+          event.target.disabled = false;
+        }}, 'Use test account') : null,
+        isWeb(component) ? h('a', {id: 'view-open', href: baseOf(component) + HOME, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
         h('button', {type: 'button', onclick: () => openDrawer(component.id)}, 'Details'),
         h('button', {type: 'button', onclick: () => { focused = null; render(); }}, 'Close (Esc)')),
       main));
+    updateViewPath();
   }
+  // Splunk changes screens without loading a new page, so the shown address is read from the view itself.
+  function updateViewPath() {
+    const label = document.getElementById('view-path');
+    const frame = focusFrame();
+    const component = focused && byId(focused);
+    if (!label || !frame || !component) return;
+    const path = framePath(frame, component);
+    if (!path) return;
+    if (label.textContent !== path) { label.textContent = path; label.title = `This view is at ${baseOf(component)}${path}`; }
+    const open = document.getElementById('view-open');
+    if (open) open.href = baseOf(component) + path;
+    if (worthKeeping(path)) store.set(`screen:${component.id}`, path);
+  }
+  setInterval(updateViewPath, 1000);
 
   function screenList(component, frame) {
     const panel = h('div', {class: 'screens', 'aria-label': 'Screens'}, h('p', {class: 'muted'}, 'Loading screens…'));
@@ -513,6 +768,344 @@
     if (event.key !== 'Escape') return;
     if (drawer) { drawer = null; render(); } else if (focused) { focused = null; render(); }
   });
+
+  // --- coverage ----------------------------------------------------------------------
+  // Each app's screens and features, read from its source at the version installed, against
+  // the cases tested. A pass or fail links to the run and steps that show it.
+  const coverage = {data: null, app: null, kind: '', loading: false, error: null, editing: null};
+  const CASE_HELP = {normal: 'Works with normal data', empty: 'No data yet', incorrect: 'Bad or unexpected input',
+    permission: 'A role without access', error: 'A dependency failing', recovery: 'Back to normal after an error'};
+  async function loadCoverage() {
+    coverage.loading = true; renderCoverage();
+    try { coverage.data = await api('/observer/api/coverage'); coverage.error = null; }
+    catch (error) { coverage.error = error.message; }
+    coverage.loading = false;
+    if (coverage.data && !coverage.data.apps.some(app => app.app === coverage.app)) coverage.app = coverage.data.apps[0]?.app || null;
+    if (tab === 'coverage') renderCoverage();
+  }
+  const markState = mark => !mark || mark.status === 'untested' ? 'untested' : mark.status === 'tested' ? mark.verdict : mark.status;
+  function versionLine(item, source) {
+    return h('tr', {}, h('td', {}, byId(item.component) ? plainName(byId(item.component)) : item.component),
+      h('td', {class: 'muted'}, item.component), h('td', {}, `${item.version || '?'}${item.build ? ` build ${item.build}` : ''}`),
+      h('td', {}, item.matches_source ? h('span', {class: 'badge ok'}, 'matches source') : h('span', {class: 'badge warn'}, `differs from ${source.version}${source.build ? ` build ${source.build}` : ''}`),
+        item.disabled ? h('span', {class: 'badge bad', style: 'margin-left:.3rem'}, 'disabled') : null));
+  }
+  function versionsCard(app) {
+    const source = app.source;
+    const mismatched = app.installed.filter(item => !item.matches_source).length;
+    return h('div', {class: 'cov-versions'},
+      h('div', {class: 'card'}, h('h3', {}, 'Source'),
+        h('div', {}, `${source.version || '?'}${source.build ? ` build ${source.build}` : ''} at `, h('code', {}, source.ref), ' (', h('code', {}, source.commit), ')'),
+        h('div', {class: 'muted'}, app.source_reason),
+        h('div', {class: 'fact-source'}, `${app.repo} · ${app.path}`),
+        app.default_branch.ref !== source.ref ? h('div', {class: 'muted', style: 'margin-top:.3rem'}, `Default branch ${app.default_branch.ref}: ${app.default_branch.version || '?'}${app.default_branch.build ? ` build ${app.default_branch.build}` : ''}`) : null,
+        app.working_tree_changes ? h('div', {class: 'notice', style: 'margin:.4rem 0 0'}, 'The checkout has uncommitted changes in this app; the inventory uses the committed ref.') : null),
+      h('div', {class: 'card'}, h('h3', {}, `Installed on ${app.installed.length} component(s)`),
+        mismatched ? h('div', {class: 'notice'}, `${mismatched} component(s) run a different version or build than the source shown.`) : null,
+        app.installed.length ? h('table', {}, h('tbody', {}, app.installed.map(item => versionLine(item, source)))) : h('div', {class: 'muted'}, 'Not installed on any discovered component.')));
+  }
+  function caseButton(app, item, kase) {
+    const mark = item.cases[kase];
+    const state = markState(mark);
+    const label = {pass: 'pass', fail: 'fail', unverified: 'unverified', 'n/a': 'n/a', untested: '—'}[state];
+    const title = mark ? `${state} · ${mark.by} · ${new Date(mark.at).toLocaleString()}${mark.note ? `\n${mark.note}` : ''}${mark.run_id ? `\nRun ${mark.run_id}${mark.evidence.length ? `, steps ${mark.evidence.map(seq => `#${seq}`).join(', ')}` : ''}` : ''}`
+      : `${CASE_HELP[kase]}: untested`;
+    return h('button', {type: 'button', class: state === 'n/a' ? 'na' : state, title, 'aria-label': `${item.label}, ${kase}: ${state}`,
+      onclick: () => { coverage.editing = {app: app.app, item, kase}; renderCoverage(); }}, label);
+  }
+  function coverageEditor() {
+    const {app, item, kase} = coverage.editing;
+    const mark = item.cases[kase];
+    const status = h('select', {'aria-label': 'Result'}, ['untested', 'unverified', 'n/a'].map(value => h('option', {value, selected: markState(mark) === value}, value)));
+    const note = h('textarea', {rows: 3, placeholder: 'What you checked (optional)'}, '');
+    return h('div', {class: 'drawer', role: 'dialog', 'aria-label': 'Coverage mark'},
+      h('div', {class: 'row'}, h('h2', {style: 'flex:1;margin:0'}, item.label), h('button', {type: 'button', onclick: () => { coverage.editing = null; renderCoverage(); }}, 'Close')),
+      h('p', {class: 'muted'}, `${item.kind} · ${kase}: ${CASE_HELP[kase]} · `, h('code', {}, item.source), item.also?.length ? ` (also ${item.also.join(', ')})` : ''),
+      mark ? h('div', {class: 'card', style: 'margin-bottom:.7rem'}, h('div', {class: 'row'}, h('strong', {}, markState(mark)), h('span', {class: 'muted'}, `by ${mark.by}`), stamp(mark.at)),
+        mark.note ? h('div', {}, mark.note) : null,
+        mark.run_id ? h('div', {class: 'muted'}, 'Run ', h('a', {href: '#', onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(mark.run_id); }}, mark.run_id),
+          mark.evidence.length ? `, steps ${mark.evidence.map(seq => `#${seq}`).join(', ')}` : '') : null) : null,
+      h('div', {class: 'cov-form'}, h('label', {}, 'Mark as ', status), note,
+        h('div', {class: 'muted', style: 'font-size:.78rem'}, 'Pass and fail come from a test run with evidence (ask Claude to test it). Here you can mark a case not applicable, seen but unverified, or untested again.'),
+        h('div', {class: 'row'}, h('button', {class: 'primary', type: 'button', onclick: async () => {
+          try { await post('/observer/api/coverage/marks', {app, item: item.id, case: kase, status: status.value, note: note.value}); coverage.editing = null; await loadCoverage(); }
+          catch (error) { coverage.error = error.message; renderCoverage(); }
+        }}, 'Save'))));
+  }
+  // Checks: what an app shows against an independent reading, run by the observer without an AI model.
+  const checks = {data: null, loading: false, error: null, timer: null, only: ''};
+  async function loadChecks() {
+    clearTimeout(checks.timer);
+    checks.loading = !checks.data;
+    try { checks.data = await api('/observer/api/checks'); checks.error = null; }
+    catch (error) { checks.error = error.message; }
+    checks.loading = false;
+    if (tab !== 'checks') return;
+    renderChecks();
+    if (checks.data && checks.data.status.running) checks.timer = setTimeout(loadChecks, 2000);
+  }
+  async function runChecks(ids) {
+    try { await post('/observer/api/checks/run', ids ? {ids} : {}); checks.error = null; }
+    catch (error) { checks.error = error.message; }
+    loadChecks();
+  }
+  function readingText(reading) {
+    if (!reading) return null;
+    const how = reading.search ? `search on ${(reading.search.components || [reading.search.component]).join(', ')}${reading.search.app ? ` in ${reading.search.app}` : ''}: ${reading.search.query}`
+      : reading.installed ? `installed version of ${reading.installed} on every component` : `fixed value ${JSON.stringify(reading.value)}`;
+    return h('details', {}, h('summary', {}, reading.what || 'reading'), h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, how));
+  }
+  // The milestone: every inventoried feature of every app, by the state of its cases. A gap means no full-coverage claim.
+  function renderMilestone() {
+    if (!coverage.data && !coverage.loading && !coverage.error) loadCoverage().then(() => { if (tab === 'checks') renderChecks(); });
+    if (!coverage.data) return h('div', {class: 'muted'}, coverage.error || 'Reading the coverage map…');
+    const keys = ['pass', 'fail', 'unverified', 'untested', 'n/a'];
+    const total = Object.fromEntries(keys.map(key => [key, 0]));
+    const rows = coverage.data.apps.map(app => {
+      for (const key of keys) total[key] += app.counts[key] || 0;
+      return h('tr', {}, h('td', {}, app.label), h('td', {}, String(app.items.length)), keys.map(key => h('td', {}, String(app.counts[key] || 0))));
+    });
+    const gaps = total.untested + total.unverified;
+    const cases = keys.reduce((sum, key) => sum + total[key], 0);
+    return h('details', {class: 'card', open: true}, h('summary', {}, h('strong', {}, 'Milestone coverage '),
+        gaps || total.fail || !cases ? h('span', {class: 'badge warn'}, 'not complete') : h('span', {class: 'badge ok'}, 'complete')),
+      h('p', {class: 'muted'}, !cases ? 'No app sources are configured, so nothing is inventoried.'
+        : gaps ? `Full coverage cannot be claimed: of ${cases} cases, ${total.untested} are untested and ${total.unverified} unverified${total.fail ? `, and ${total.fail} fail` : ''}.`
+        : total.fail ? `Every case has a result, and ${total.fail} fail.` : 'Every inventoried case has passed or is marked n/a.'),
+      h('table', {}, h('thead', {}, h('tr', {}, ['App', 'Features and screens', ...keys].map(text => h('th', {}, text)))), h('tbody', {}, rows)));
+  }
+  function renderChecks() {
+    const pane = panes.checks;
+    if (!checks.data && !checks.loading && !checks.error) { loadChecks(); }
+    const data = checks.data;
+    const running = Boolean(data && data.status.running);
+    const parts = [h('p', {class: 'muted'}, 'Each check compares what an app shows with an independent reading of the same fact. The observer runs them itself',
+      data ? ` as ${data.account}` : '', ', read-only and without an AI model, about every six hours. A reading that cannot be taken leaves the check unverified, never passed. ',
+      h('button', {class: 'small primary', type: 'button', disabled: running || !data, onclick: () => runChecks()}, running ? 'Running…' : 'Run all now'))];
+    if (checks.error) parts.push(h('div', {class: 'notice'}, checks.error));
+    if (data) {
+      for (const problem of data.problems) parts.push(h('div', {class: 'notice'}, `Check definition skipped: ${problem}`));
+      const state = check => check.last ? check.last.result : 'not run';
+      const counts = {pass: 0, fail: 0, unverified: 0, 'not run': 0};
+      for (const check of data.checks) counts[state(check)] += 1;
+      const tone = {pass: 'ok', fail: 'bad', unverified: 'warn', 'not run': ''};
+      parts.push(h('div', {class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.4rem 0'}, ['', 'fail', 'unverified', 'pass', 'not run'].map(name =>
+        h('button', {class: 'small', type: 'button', 'aria-pressed': String(checks.only === name), onclick: () => { checks.only = name; renderChecks(); }},
+          name ? `${name} ${counts[name]}` : `All ${data.checks.length}`))));
+      if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
+        parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (./observer.sh app-roles in the lab checkout), then run them again.`));
+      const stale = 2 * (data.interval_seconds || 21600) * 1000;
+      const newFailures = data.checks.filter(check => check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
+      if (newFailures.length) parts.push(h('div', {class: 'notice'}, `New failure${newFailures.length > 1 ? 's' : ''}: ${newFailures.map(check => check.title).join('; ')}`));
+      parts.push(renderMilestone());
+      const tickets = new Map();
+      for (const check of data.checks) {
+        if (checks.only && state(check) !== checks.only) continue;
+        const key = check.ticket ? `Issue #${check.ticket}` : 'Other';
+        tickets.set(key, [...(tickets.get(key) || []), check]);
+      }
+      for (const [name, group] of [...tickets].sort((a, b) => a[0].localeCompare(b[0], undefined, {numeric: true}))) {
+        parts.push(h('h3', {}, name, ' ', h('span', {class: 'muted', style: 'font-weight:normal'}, `${group.filter(check => state(check) === 'pass').length} of ${group.length} passing`)));
+        parts.push(h('table', {}, h('thead', {}, h('tr', {}, ['Check', 'Result', 'What was found', 'Checked', ''].map(text => h('th', {}, text)))),
+          h('tbody', {}, group.map(check => h('tr', {},
+            h('td', {}, h('div', {}, check.title), h('div', {class: 'muted'}, check.id, check.app ? ` · ${check.app}` : ''), readingText(check.shown), readingText(check.expected)),
+            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, state(check)),
+              check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < 2 * stale ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
+              check.last && check.last.since !== check.last.at ? h('div', {class: 'muted'}, 'since ', stamp(check.last.since)) : null),
+            h('td', {style: 'word-break:break-word'}, check.last ? check.last.detail : ''),
+            h('td', {}, check.last ? [stamp(check.last.at), Date.now() - Date.parse(check.last.at) > stale ? h('span', {class: 'badge warn', style: 'margin-left:.3rem', title: 'Older than two scheduled rounds'}, 'stale') : null, ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
+              onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(check.last.run_id); }}, `steps ${check.last.steps.map(seq => `#${seq}`).join(', ') || `#${check.last.step}`}`)] : ''),
+            h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run')))))));
+      }
+      if (!data.checks.length) parts.push(h('div', {class: 'notice'}, 'No checks are defined.'));
+    } else if (checks.loading) parts.push(h('div', {class: 'muted'}, 'Loading…'));
+    pane.replaceChildren(...parts);
+  }
+
+  function renderCoverage() {
+    const pane = panes.coverage;
+    const parts = [h('p', {class: 'muted'}, 'Each app’s screens and features, read from its source at the version installed in the lab, against six cases. Pass and fail come from test runs and link to the steps that show them. ',
+      coverage.data ? ['Checked ', stamp(coverage.data.checked_at), ' · '] : null,
+      h('button', {class: 'small', type: 'button', disabled: coverage.loading, onclick: loadCoverage}, coverage.loading ? 'Reading source…' : 'Refresh'))];
+    if (!coverage.data && !coverage.loading && !coverage.error) { loadCoverage(); return; }
+    if (coverage.error) parts.push(h('div', {class: 'notice'}, coverage.error));
+    const data = coverage.data;
+    if (data) {
+      for (const failure of data.errors) parts.push(h('div', {class: 'notice'}, `${failure.app}: ${failure.error}`));
+      if (!data.apps.length && !data.errors.length) parts.push(h('div', {class: 'notice'}, `No app sources are configured. List them in ${data.config}.`));
+      parts.push(h('div', {class: 'cov-apps', role: 'tablist'}, data.apps.map(app => h('button', {type: 'button', role: 'tab', 'aria-selected': String(app.app === coverage.app), 'aria-pressed': String(app.app === coverage.app),
+        onclick: () => { coverage.app = app.app; renderCoverage(); }}, `${app.label} `, h('span', {class: 'muted'}, `${app.counts.pass + app.counts.fail}/${app.items.length * app.cases.length}`)))));
+      const app = data.apps.find(item => item.app === coverage.app);
+      if (app) {
+        parts.push(versionsCard(app));
+        const total = app.items.length * app.cases.length;
+        parts.push(h('div', {class: 'row', style: 'margin-bottom:.5rem'},
+          h('span', {class: 'badge ok'}, `${app.counts.pass} pass`), h('span', {class: 'badge bad'}, `${app.counts.fail} fail`),
+          h('span', {class: 'badge warn'}, `${app.counts.unverified} unverified`), h('span', {class: 'badge'}, `${app.counts['n/a']} n/a`),
+          h('span', {class: 'muted'}, `${app.counts.untested} of ${total} untested`), h('span', {style: 'flex:1'}),
+          h('label', {class: 'muted'}, 'Show ', h('select', {onchange: event => { coverage.kind = event.target.value; renderCoverage(); }},
+            h('option', {value: ''}, 'everything'), [...new Set(app.items.map(item => item.kind))].map(kind => h('option', {value: kind, selected: coverage.kind === kind}, kind))))));
+        const ordered = coverage.kind ? app.items : app.items.filter(item => !item.parent || !app.items.some(other => other.id === item.parent))
+          .flatMap(item => [item, ...app.items.filter(child => child.parent === item.id)]);
+        const items = ordered.filter(item => !coverage.kind || item.kind === coverage.kind);
+        parts.push(h('table', {class: 'cov-grid'}, h('thead', {}, h('tr', {}, h('th', {}, 'Feature or screen'), app.cases.map(kase => h('th', {title: CASE_HELP[kase], style: 'text-align:center'}, kase)))),
+          h('tbody', {}, items.map(item => h('tr', {class: item.parent && !coverage.kind ? 'child' : ''},
+            h('td', {}, h('div', {class: 'kind'}, item.kind), h('div', {}, item.label), h('div', {class: 'fact-source'}, item.source, item.detail ? ` · ${item.detail}` : '')),
+            app.cases.map(kase => h('td', {class: 'case'}, caseButton(app, item, kase))))))));
+      }
+    }
+    if (coverage.editing) parts.push(coverageEditor());
+    pane.replaceChildren(...parts);
+  }
+
+  // --- architecture ------------------------------------------------------------------
+  // Rows are sites, columns are tiers. Everything comes from discovery; links are drawn
+  // over the laid-out boxes once the browser has placed them.
+  const LINKS = {
+    data: {color: '#6fcf97', dash: '', label: 'Sends data to'},
+    federated: {color: '#f2c94c', dash: '7 5', label: 'Federated search'},
+    balances: {color: '#8fb8e6', dash: '', label: 'Load balances'},
+    searches: {color: '#bb9af7', dash: '2 4', label: 'Searches (cluster search head role, same site)'},
+    deploys: {color: '#a8b5c7', dash: '2 4', label: 'Deploys apps to (deployer, same site)'},
+  };
+  function tierOf(component) {
+    const roles = new Set((component.facts.server_roles || {}).value || []);
+    if (['universal_forwarder', 'data_generator'].includes(component.kind) || roles.has('heavyweight_forwarder')) return 'sources';
+    if (component.kind === 'load_balancer' || roles.has('shc_member') || roles.has('shc_captain') || roles.has('shc_deployer')) return 'search';
+    if (roles.has('search_head') && !roles.has('indexer') && !roles.has('cluster_manager')) return 'search';
+    if (component.kind === 'splunk_enterprise') return roles.has('search_head') && roles.has('indexer') ? 'search' : 'indexing';
+    return 'sources';
+  }
+  function rowOf(component) {
+    if (['observer_router', 'container'].includes(component.kind)) return 'observer';
+    return siteOf(component) || 'fleet';
+  }
+  function renderArchitecture() {
+    const wrapper = h('div', {});
+    wrapper.append(h('p', {class: 'muted'}, 'Drawn from discovery (', stamp(lab.checked_at), '): Splunk roles and clusters from each splunkd, load balancer backends from HAProxy, forwarder outputs from btool, and federated providers from the HQ search heads. Click a box for its details and history.'));
+    wrapper.append(h('div', {class: 'legend'}, Object.values(LINKS).map(link => h('span', {},
+      svgLine(link), link.label))));
+    const rows = [];
+    const order = ['hq', 'alpha', 'bravo', 'mgmt'];
+    const seen = new Set(lab.components.map(rowOf));
+    for (const key of [...order.filter(key => seen.has(key)), ...[...seen].filter(key => !order.includes(key) && !['fleet', 'observer'].includes(key)).sort(), 'fleet', 'observer']) {
+      if (seen.has(key)) rows.push(key);
+    }
+    const rowTitle = key => key === 'fleet' ? ['Forwarder fleet', 'Shared, one per Splunk version'] : key === 'observer' ? ['Observer', 'This interface'] :
+      [siteName(key), {hq: 'Headquarters site', alpha: 'Spoke site', bravo: 'Spoke site', mgmt: 'Management'}[key] || 'Site'];
+    const grid = h('div', {class: 'arch'});
+    grid.append(h('div', {}), ...['Data sources', 'Indexing', 'Search'].map(text => h('div', {class: 'arch-head'}, text)));
+    const groupedIds = new Set(lab.groups.flatMap(group => group.members));
+    for (const key of rows) {
+      const members = lab.components.filter(component => rowOf(component) === key);
+      const [title, subtitle] = rowTitle(key);
+      grid.append(h('div', {class: 'arch-row-line'}), h('div', {class: 'arch-site'}, title, h('small', {}, subtitle)));
+      for (const tier of ['sources', 'indexing', 'search']) {
+        const cell = h('div', {class: 'arch-cell'});
+        const inTier = members.filter(component => tierOf(component) === tier);
+        for (const group of lab.groups) {
+          const groupMembers = group.members.filter(id => byId(id) && inTier.some(component => component.id === id));
+          if (!groupMembers.length) continue;
+          const ordered = [...groupMembers].sort((a, b) => (a === group.manager ? -1 : b === group.manager ? 1 : a.localeCompare(b)));
+          cell.append(h('div', {class: 'cluster', 'data-group': group.id}, h('div', {class: 'cluster-title'}, groupName(group)),
+            h('div', {class: 'cluster-members'}, ordered.map(id => archNode(byId(id), true)))));
+        }
+        const loose = inTier.filter(component => !groupedIds.has(component.id))
+          .sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id, undefined, {numeric: true}));
+        if (key === 'fleet' && loose.length > 3) cell.append(h('div', {class: 'cluster-members'}, loose.map(component => archNode(component, true))));
+        else loose.forEach(component => cell.append(archNode(component, false)));
+        grid.append(cell);
+      }
+    }
+    const links = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    links.setAttribute('class', 'arch-links');
+    grid.append(links);
+    wrapper.append(h('div', {class: 'arch-scroll'}, grid));
+    return wrapper;
+  }
+  function svgLine(link) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '28'); svg.setAttribute('height', '8');
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    Object.entries({x1: 1, y1: 4, x2: 27, y2: 4, stroke: link.color, 'stroke-width': 2, 'stroke-dasharray': link.dash}).forEach(([k, v]) => line.setAttribute(k, v));
+    svg.append(line);
+    return svg;
+  }
+  function archNode(component, compact) {
+    return h('button', {class: `node${compact ? ' compact' : ''}`, type: 'button', 'data-node': component.id, title: `${plainName(component)} (${component.id})`,
+      onclick: () => openDrawer(component.id)},
+      component.owner_name || plainName(component, true), h('span', {class: 'node-host'}, component.id), stateBadge(component));
+  }
+  // Links between boxes: one line per pair of drawn boxes, so a forwarder sending to every
+  // member of a cluster gets a single line to the cluster.
+  function architectureLinks() {
+    const boxFor = id => {
+      const group = lab.groups.find(item => item.members.includes(id) && (item.type === 'search_head_cluster' || id !== item.manager));
+      return group ? `group:${group.id}` : `node:${id}`;
+    };
+    const links = new Map();
+    const add = (from, to, type) => { if (from !== to) links.set(`${from}|${to}|${type}`, {from, to, type}); };
+    for (const rel of lab.relationships) {
+      if (rel.type === 'sends data to') add(`node:${rel.from}`, boxFor(rel.to), 'data');
+      else if (rel.type === 'discovers indexers through') {
+        const cluster = lab.groups.find(group => group.manager === rel.to);
+        add(`node:${rel.from}`, cluster ? `group:${cluster.id}` : `node:${rel.to}`, 'data');
+      } else if (rel.type === 'federated search provider') add(boxFor(rel.from), boxFor(rel.to), 'federated');
+      else if (rel.type === 'load balances') add(`node:${rel.from}`, boxFor(rel.to), 'balances');
+    }
+    for (const shc of lab.groups.filter(group => group.type === 'search_head_cluster')) {
+      const searchesCluster = shc.members.some(id => ((byId(id) || {facts: {}}).facts.server_roles || {value: []}).value.includes('cluster_search_head'));
+      const indexers = lab.groups.find(group => group.type === 'indexer_cluster' && group.label === shc.label);
+      if (searchesCluster && indexers) add(`group:${shc.id}`, `group:${indexers.id}`, 'searches');
+      const deployer = lab.components.find(component => ((component.facts.server_roles || {}).value || []).includes('shc_deployer') && siteOf(component) === shc.label);
+      if (deployer) add(`node:${deployer.id}`, `group:${shc.id}`, 'deploys');
+    }
+    return [...links.values()];
+  }
+  function drawArchitectureLinks() {
+    const grid = panes.architecture.querySelector('.arch');
+    const svg = grid && grid.querySelector('.arch-links');
+    if (!svg || panes.architecture.hidden) return;
+    const origin = grid.getBoundingClientRect();
+    svg.setAttribute('width', origin.width); svg.setAttribute('height', origin.height);
+    svg.replaceChildren();
+    const find = key => key.startsWith('group:') ? grid.querySelector(`[data-group="${CSS.escape(key.slice(6))}"]`) : grid.querySelector(`[data-node="${CSS.escape(key.slice(5))}"]`);
+    for (const link of architectureLinks()) {
+      const from = find(link.from), to = find(link.to);
+      if (!from || !to) continue;
+      const a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
+      const style = LINKS[link.type];
+      let x1, y1, x2, y2, c1, c2;
+      if (Math.abs((a.left + a.right) / 2 - (b.left + b.right) / 2) < 40) {
+        // Same column: leave from the bottom or top and arc out to the side.
+        const down = b.top > a.top;
+        x1 = a.right - origin.left; y1 = (down ? a.bottom : a.top) - origin.top - (down ? 6 : -6);
+        x2 = b.right - origin.left; y2 = (down ? b.top : b.bottom) - origin.top + (down ? 6 : -6);
+        const bulge = Math.max(x1, x2) + 30 + Math.min(60, Math.abs(y2 - y1) / 6);
+        c1 = `${bulge} ${y1}`; c2 = `${bulge} ${y2}`;
+      } else {
+        const rightward = b.left > a.left;
+        x1 = (rightward ? a.right : a.left) - origin.left; y1 = (a.top + a.bottom) / 2 - origin.top;
+        x2 = (rightward ? b.left : b.right) - origin.left; y2 = (b.top + b.bottom) / 2 - origin.top;
+        const pull = Math.max(30, Math.abs(x2 - x1) / 2);
+        c1 = `${x1 + (rightward ? pull : -pull)} ${y1}`; c2 = `${x2 + (rightward ? -pull : pull)} ${y2}`;
+      }
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      Object.entries({d: `M ${x1} ${y1} C ${c1}, ${c2}, ${x2} ${y2}`, fill: 'none', stroke: style.color, 'stroke-width': 1.6,
+        'stroke-dasharray': style.dash, opacity: .85, 'marker-end': `url(#arrow-${link.type})`}).forEach(([k, v]) => path.setAttribute(k, v));
+      svg.append(path);
+    }
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    for (const [type, style] of Object.entries(LINKS)) {
+      const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+      Object.entries({id: `arrow-${type}`, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse'}).forEach(([k, v]) => marker.setAttribute(k, v));
+      const tip = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      tip.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z'); tip.setAttribute('fill', style.color);
+      marker.append(tip); defs.append(marker);
+    }
+    svg.prepend(defs);
+  }
+  new ResizeObserver(() => requestAnimationFrame(drawArchitectureLinks)).observe(panes.architecture);
 
   // --- overview ----------------------------------------------------------------------
   function renderOverview() {
@@ -624,10 +1217,518 @@
     return JSON.stringify(value);
   }
 
+  // --- assistant ---------------------------------------------------------------------
+  // Claude works on the server; this panel shows each step as it happens. A show_screen step
+  // opens that component's view here, and a change waits for an approval card below.
+  const assistant = {open: false, status: null, runs: [], run: null, events: new Map(), rev: 0, timer: null, shown: new Set(), error: null, busy: false};
+  const assistantNode = h('aside', {class: 'assistant', 'aria-label': 'Claude assistant', hidden: true});
+  const assistantHead = h('div', {class: 'assistant-head'});
+  const trail = h('div', {class: 'trail', 'aria-live': 'polite'});
+  const composer = h('div', {class: 'composer'});
+  const promptInput = h('textarea', {rows: 3, placeholder: 'Ask about the lab, or ask Claude to do something in it…', 'aria-label': 'Prompt for Claude'});
+  promptInput.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); sendPrompt(); } });
+  assistantNode.append(assistantHead, trail, composer);
+  document.body.append(assistantNode);
+  // A live run is still adding steps; only an in-page run occupies the prompt (a terminal session runs beside it).
+  const liveRun = () => assistant.run && ['running', 'waiting_for_approval'].includes(assistant.run.status);
+  const terminalRun = () => assistant.run && assistant.run.origin === 'terminal';
+  const checkRun = () => assistant.run && assistant.run.origin === 'check';
+  const activeRun = () => liveRun() && !terminalRun() && !checkRun();
+  const pageOpenedAt = Date.now();
+  const followed = new Set();
+
+  function setAssistantOpen(open) {
+    assistant.open = open;
+    assistantNode.hidden = !open;
+    document.body.classList.toggle('with-assistant', open);
+    document.getElementById('assistant-toggle').setAttribute('aria-pressed', String(open));
+    try { localStorage.setItem('assistant-open', open ? '1' : ''); } catch (_error) { /* storage unavailable */ }
+    if (open) loadAssistant();
+    requestAnimationFrame(layoutFrames);
+  }
+  async function loadAssistant() {
+    try {
+      const result = await api('/observer/api/assistant');
+      assistant.status = result.status;
+      assistant.runs = result.runs;
+      assistant.error = null;
+      if (!assistant.run && result.runs.length) await selectRun(result.runs[0].id);
+    } catch (error) { assistant.error = error.message; }
+    renderAssistant();
+  }
+  async function selectRun(id, follow) {
+    clearTimeout(assistant.timer);
+    assistant.run = null; assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set();
+    pageRun.paused = false; pageRun.tookOver = false;
+    if (id) await fetchRun(id, !follow);
+    renderAssistant();
+  }
+  // Follow a run started elsewhere (Claude Code in the terminal, or another browser) while it is live.
+  async function followLive() {
+    try {
+      const {latest} = await api('/observer/api/assistant/live');
+      if (!latest || latest.status !== 'running' || latest.origin === 'check' || followed.has(latest.id) || activeRun()) return;
+      if (assistant.run && assistant.run.id === latest.id) return;
+      // A session left running before this page opened is not followed until it does something new.
+      if (Date.parse(latest.updated_at) < pageOpenedAt - 60000) return;
+      followed.add(latest.id);
+      if (!assistant.open) setAssistantOpen(true);
+      await selectRun(latest.id, true);
+      loadAssistantRuns();
+    } catch (_error) { /* next poll */ }
+  }
+  setInterval(followLive, 2500);
+  async function fetchRun(id, initial) {
+    clearTimeout(assistant.timer);
+    let result;
+    try { result = await api(`/observer/api/assistant/runs/${encodeURIComponent(id)}?since=${assistant.rev}`); }
+    catch (error) { assistant.error = error.message; renderAssistant(); assistant.timer = setTimeout(() => fetchRun(id), 3000); return; }
+    if (assistant.run && assistant.run.id !== id) return;  // another run was selected meanwhile
+    for (const item of result.events) {
+      const previous = assistant.events.get(item.seq);
+      assistant.events.set(item.seq, item);
+      assistant.rev = Math.max(assistant.rev, item.rev);
+      if (item.type === 'display' && !assistant.shown.has(item.seq)) {
+        assistant.shown.add(item.seq);
+        if (!initial) showScreen(item.component, item.path);
+      }
+      if (item.type === 'tool' && item.name === 'container_action' && item.status === 'ok' && previous && previous.status !== 'ok') {
+        refresh(); setTimeout(refresh, 20000); setTimeout(refresh, 70000);
+      }
+      if (item.type === 'approval' && item.decision === 'pending' && !assistant.open) setAssistantOpen(true);
+      if (item.type === 'browser' && item.status === 'pending') runPageRequest(item);
+    }
+    const wasActive = liveRun();
+    assistant.run = Object.assign({}, result, {events: undefined});
+    renderAssistant();
+    if (liveRun()) assistant.timer = setTimeout(() => fetchRun(id), 1000);
+    else if (wasActive) { refresh(); loadAssistant(); }
+  }
+  // --- shared view: Claude's reads and actions run here, in the owner's own live view ---
+  // Splunk's event list holds raw event text, which stays on this computer.
+  const NOT_FOR_MODEL = '[data-view^="views/shared/eventsviewer"], .shared-eventsviewer, .raw-event, .json-event, td.event, script, style, noscript, svg, template';
+  const INTERACTIVE = 'a[href], button, input, select, textarea, [role=button], [role=tab], [role=menuitem], [role=link], [role=checkbox], [role=option], [role=combobox], [role=switch]';
+  const pageRun = {executed: new Set(), paused: false, tookOver: false};
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function visible(el) {
+    const box = el.getBoundingClientRect();
+    if (!box.width || !box.height) return false;
+    const style = el.ownerDocument.defaultView.getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+  // Only what the owner can see on the screen is read: Splunk keeps hidden banners, menus and dialogs
+  // in the page, and reading those reports things that are not on screen. One line per block of text.
+  function visibleText(doc) {
+    const view = doc.defaultView;
+    const shown = new Map();
+    const isShown = el => {
+      if (!shown.has(el)) {
+        const style = view.getComputedStyle(el);
+        shown.set(el, el.getClientRects().length > 0 && style.visibility !== 'hidden' && Number(style.opacity) !== 0
+          && el.getAttribute('aria-hidden') !== 'true' && !el.matches(NOT_FOR_MODEL) && !el.matches('input[type=password]')
+          && (el === doc.body || !el.parentElement || isShown(el.parentElement)));
+      }
+      return shown.get(el);
+    };
+    const blockOf = el => { while (el !== doc.body && view.getComputedStyle(el).display.startsWith('inline')) el = el.parentElement; return el; };
+    const lines = [];
+    let block = null, size = 0;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && size < 9000; node = walker.nextNode()) {
+      const piece = node.nodeValue.replace(/\s+/g, ' ').trim();
+      if (!piece || !node.parentElement || !isShown(node.parentElement)) continue;
+      const owner = blockOf(node.parentElement);
+      if (owner === block) lines[lines.length - 1] += ` ${piece}`; else lines.push(piece);
+      block = owner; size += piece.length + 1;
+    }
+    return lines.join('\n');
+  }
+  function snapshot(frame) {
+    const doc = frame.contentDocument;
+    if (!doc || !doc.body) throw new Error('The view has not loaded yet');
+    let next = 1;
+    for (const el of doc.querySelectorAll('[data-observer-ref]')) next = Math.max(next, Number(el.dataset.observerRef.slice(1)) + 1);
+    const elements = [];
+    let omittedFields = 0;
+    for (const el of doc.querySelectorAll(INTERACTIVE)) {
+      if (elements.length >= 150 || !visible(el) || el.closest(NOT_FOR_MODEL)) continue;
+      if (!el.dataset.observerRef) el.dataset.observerRef = `e${next++}`;
+      const tag = el.tagName.toLowerCase();
+      const type = tag === 'input' ? (el.type || 'text') : tag === 'button' ? (el.type === 'submit' ? 'submit' : '') : '';
+      const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      let value = ['input', 'textarea', 'select'].includes(tag) ? String(el.value || '').slice(0, 120) : '';
+      if (type === 'password') { value = value ? '(hidden)' : ''; omittedFields++; }
+      const href = tag === 'a' ? (el.getAttribute('href') || '').slice(0, 160) : '';
+      elements.push({ref: el.dataset.observerRef, role: el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'input' ? `${type} field` : tag),
+        label, type, value, href, in_form: Boolean(el.closest('form, [role=dialog], .modal'))});
+    }
+    const omittedEvents = doc.body.querySelectorAll('.raw-event, .json-event, td.event').length;
+    const text = visibleText(doc);
+    const path = frame.contentWindow.location.pathname + frame.contentWindow.location.search;
+    const omitted = [omittedEvents ? `${omittedEvents} raw event(s) on screen were left out` : '', omittedFields ? 'password values hidden' : ''].filter(Boolean).join('; ');
+    return {url: path, title: doc.title, text: text.slice(0, 8000), elements, omitted, login_page: /\/account\/login/.test(path),
+      summary: `${doc.title || path} · ${elements.length} elements`};
+  }
+  function highlight(el) {
+    const previous = el.style.outline;
+    el.style.outline = '3px solid #f2c94c';
+    el.style.outlineOffset = '2px';
+    el.scrollIntoView({block: 'center', inline: 'nearest'});
+    setTimeout(() => { el.style.outline = previous; }, 2500);
+  }
+  function setValue(el, text) {
+    // Set the value the way a keystroke would, so React-based Splunk pages see the change.
+    const view = el.ownerDocument.defaultView;
+    const setter = Object.getOwnPropertyDescriptor((el.tagName === 'TEXTAREA' ? view.HTMLTextAreaElement : view.HTMLInputElement).prototype, 'value').set;
+    el.focus();
+    setter.call(el, text);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  async function viewFor(component) {
+    const target = byId(component);
+    if (!target || !isWeb(target)) throw new Error(`${component} has no Splunk Web`);
+    if (focused !== component || !focusFrame()) { showScreen(component, ''); await sleep(500); }
+    const frame = focusFrame();
+    for (let i = 0; i < 40 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
+    return frame;
+  }
+  // The observer signs in to Splunk Web on its side and gives this view the session; the password never comes here.
+  const signedIn = new Map();  // component -> account this view was signed in as
+  async function signInView(component, path) {
+    const result = await postWithReason(`/observer/api/components/${encodeURIComponent(component)}/signin`, {});
+    signedIn.set(component, result.account);
+    const target = byId(component);
+    let frame = focusFrame();
+    if (focused !== component || !frame) { showScreen(component, path); await sleep(500); frame = focusFrame(); }
+    await reloadSignedIn(frame, target, path);
+    await sleep(800);
+    for (let i = 0; i < 80 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
+    const label = document.getElementById('view-account');
+    if (label) label.textContent = `Signed in as ${result.account}`;
+    return result.account;
+  }
+  // After a sign-in the view reloads where it was, or on the given path; a sign-in page gives way to the last screen.
+  async function reloadSignedIn(frame, target, path) {
+    const current = framePath(frame, target);
+    const remembered = store.get(`screen:${target.id}`);
+    frame.src = baseOf(target) + (path || (worthKeeping(current) ? current : worthKeeping(remembered) ? remembered : HOME));
+  }
+  async function signInAll() {
+    const ids = layout.tiles.filter(tile => tile.live && byId(tile.id) && isWeb(byId(tile.id))).map(tile => tile.id);
+    const failed = [];
+    await Promise.all(ids.map(async id => {
+      try {
+        const result = await postWithReason(`/observer/api/components/${encodeURIComponent(id)}/signin`, {});
+        signedIn.set(id, result.account);
+        const frame = tileNodes.get(id) && tileNodes.get(id).node.querySelector('iframe');
+        if (frame) await reloadSignedIn(frame, byId(id), '');
+      } catch (error) { failed.push(`${displayName(byId(id))}: ${await errorText(error)}`); }
+    }));
+    if (failed.length) throw new Error(`Could not sign in:\n${failed.join('\n')}`);
+  }
+  async function pageAction(action, payload) {
+    if (action === 'signin') {
+      const account = await signInView(payload.component, payload.path);
+      await sleep(1500);
+      return Object.assign(snapshot(focusFrame()), {account});
+    }
+    const frame = await viewFor(payload.component);
+    if (action === 'read') return snapshot(frame);
+    const el = frame.contentDocument.querySelector(`[data-observer-ref="${CSS.escape(payload.ref)}"]`);
+    if (!el || !visible(el)) throw new Error(`Element ${payload.ref} is no longer on the screen; read the screen again`);
+    highlight(el);
+    await sleep(700);
+    if (action === 'click') el.click();
+    else if (action === 'type') {
+      if (el.type === 'password') throw new Error('Password fields are for the owner only');
+      setValue(el, payload.text);
+      if (payload.press_enter) {
+        for (const type of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true}));
+      }
+    } else if (action === 'upload') {
+      // Put a package from the observer's packages folder into a file field, as if the owner had chosen it.
+      if (el.type !== 'file') throw new Error(`Element ${payload.ref} is not a file field`);
+      const response = await fetch(`/observer/api/packages/${encodeURIComponent(payload.file)}`, {cache: 'no-store'});
+      if (!response.ok) throw new Error(`No package ${payload.file} in the observer's packages folder`);
+      const view = el.ownerDocument.defaultView;
+      const transfer = new view.DataTransfer();
+      transfer.items.add(new view.File([await response.blob()], payload.file, {type: 'application/gzip'}));
+      el.files = transfer.files;
+      el.dispatchEvent(new Event('input', {bubbles: true}));
+      el.dispatchEvent(new Event('change', {bubbles: true}));
+    } else if (action === 'select') {
+      const option = [...el.options].find(item => item.value === payload.value || item.text.trim() === payload.value);
+      if (!option) throw new Error(`No option ${payload.value}`);
+      el.value = option.value;
+      el.dispatchEvent(new Event('change', {bubbles: true}));
+    } else throw new Error(`Unknown action ${action}`);
+    await sleep(1800);
+    for (let i = 0; i < 40 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
+    return snapshot(frame);
+  }
+  async function runPageRequest(item) {
+    if (pageRun.executed.has(item.request_id) || pageRun.paused || !assistant.run) return;
+    pageRun.executed.add(item.request_id);
+    let ok = true, result;
+    try { result = await pageAction(item.action, item.payload); } catch (error) { ok = false; result = {error: error.message, summary: error.message}; }
+    if (pageRun.tookOver) { result.owner_took_over = true; pageRun.tookOver = false; }
+    try { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/page/${item.request_id}`, {ok, result}); }
+    catch (_error) { /* another page answered first */ }
+  }
+  async function controlRun(action) {
+    pageRun.paused = action !== 'resume';
+    if (action === 'takeover') pageRun.tookOver = true;
+    try { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/control`, {action}); } catch (error) { assistant.error = error.message; }
+    if (action === 'resume') for (const item of assistant.events.values()) if (item.type === 'browser' && item.status === 'pending') runPageRequest(item);
+    fetchRun(assistant.run.id);
+  }
+
+  function showScreen(component, path) {
+    if (!byId(component)) return;
+    if (history) history = null;
+    tab = 'wall';
+    focused = component;
+    render();
+    const frame = focusFrame();
+    if (frame && path && framePath(frame, byId(component)) !== path) {
+      frame.dataset.screen = path;
+      frame.src = baseOf(byId(component)) + path;
+    }
+  }
+  async function sendPrompt() {
+    const text = promptInput.value.trim();
+    if (!text || assistant.busy) return;
+    assistant.busy = true; assistant.error = null; renderAssistant();
+    try {
+      const continuing = assistant.run && !activeRun() && !terminalRun() && !checkRun();
+      const result = continuing
+        ? await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/messages`, {prompt: text})
+        : await postWithReason('/observer/api/assistant/runs', {prompt: text});
+      promptInput.value = '';
+      if (!continuing) { assistant.events = new Map(); assistant.rev = 0; assistant.shown = new Set(); followed.add(result.id); }
+      assistant.run = Object.assign({}, result, {events: undefined});
+      await fetchRun(result.id);
+      loadAssistantRuns();
+    } catch (error) {
+      assistant.error = await errorText(error);
+    } finally { assistant.busy = false; renderAssistant(); }
+  }
+  async function loadAssistantRuns() {
+    try { assistant.runs = (await api('/observer/api/assistant')).runs; renderAssistant(); } catch (_error) { /* next poll */ }
+  }
+  // POST helpers throw on non-2xx; read the server's reason when it gave one.
+  async function errorText(error) { return error.reason || error.message; }
+  async function postWithReason(path, body) {
+    const response = await fetch(path, {method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = new Error(value.error || `HTTP ${response.status}`); error.reason = value.error; throw error; }
+    return value;
+  }
+  async function decide(approvalId, decision, note) {
+    try { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/approvals/${approvalId}`, {decision, note}); }
+    catch (error) { assistant.error = await errorText(error); }
+    fetchRun(assistant.run.id);
+  }
+  async function saveKey(value) {
+    try { assistant.status = (await postWithReason('/observer/api/assistant/key', {api_key: value})).status; assistant.error = null; }
+    catch (error) { assistant.error = await errorText(error); }
+    renderAssistant();
+  }
+
+  function richText(text) {
+    // Bold and inline code only; everything else stays plain text.
+    return text.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/).map(part =>
+      part.startsWith('**') && part.endsWith('**') && part.length > 4 ? h('strong', {}, part.slice(2, -2)) :
+      part.startsWith('`') && part.endsWith('`') && part.length > 2 ? h('code', {}, part.slice(1, -1)) : part);
+  }
+  function toolSummary(item) {
+    const input = item.input || {};
+    return Object.entries(input).filter(([key, value]) => value !== '' && !['reason', 'expected_effect', 'cleanup'].includes(key))
+      .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`).join(' · ');
+  }
+  function stepNode(item) {
+    const time = h('span', {class: 'muted', style: 'font-size:.72rem'}, new Date(item.at).toLocaleTimeString());
+    switch (item.type) {
+      case 'prompt': return h('div', {class: 'step you'}, item.text);
+      case 'text': return h('div', {class: 'step claude'}, richText(item.text));
+      case 'thinking': return h('details', {class: 'thinking'}, h('summary', {}, 'Claude’s reasoning (summary)'), h('div', {style: 'white-space:pre-wrap'}, item.text));
+      case 'tool': {
+        const tone = {ok: 'ok', error: 'bad', running: 'warn'}[item.status] || '';
+        return h('div', {class: 'step tool'},
+          h('div', {class: 'row'}, h('strong', {}, item.name), h('span', {class: `badge ${tone}`}, item.status === 'running' ? 'running…' : item.status), time,
+            item.seconds !== undefined ? h('span', {class: 'muted', style: 'font-size:.72rem'}, `${item.seconds}s`) : null),
+          toolSummary(item) ? h('div', {class: 'muted', style: 'overflow-wrap:anywhere'}, toolSummary(item)) : null,
+          h('div', {class: 'fact-source'}, item.source),
+          item.result !== undefined && item.result !== null ? h('details', {}, h('summary', {}, item.name === 'Claude Code' ? 'Result' : item.status === 'error' ? 'Error sent to Claude' : 'Evidence sent to Claude'), h('pre', {}, item.result)) : null);
+      }
+      case 'display': {
+        const component = byId(item.component);
+        return h('div', {class: 'step display'}, h('div', {class: 'row'}, '👁 Showing ', h('strong', {}, component ? displayName(component) : item.component), time,
+          h('button', {class: 'small', type: 'button', onclick: () => showScreen(item.component, item.path)}, 'Show again')),
+          item.path ? h('div', {class: 'muted', style: 'overflow-wrap:anywhere'}, item.path) : null);
+      }
+      case 'browser': {
+        const payload = item.payload || {};
+        const verb = {signin: `Signed your view in as the test account${payload.path ? ` and opened ${payload.path}` : ''}`, read: 'Read the screen', click: `Click ${payload.label ? `“${payload.label}”` : payload.ref}`,
+          type: `Type “${payload.text}”${payload.press_enter ? ' + Enter' : ''} into ${payload.label ? `“${payload.label}”` : payload.ref}`,
+          select: `Choose “${payload.value}” in ${payload.label ? `“${payload.label}”` : payload.ref}`,
+          upload: `Choose file ${payload.file} in ${payload.ref}`}[item.action] || item.action;
+        const tone = {done: 'ok', failed: 'bad', pending: 'warn'}[item.status] || 'warn';
+        const waiting = item.status === 'pending' && pageRun.paused;
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `🖱 ${verb}`),
+          h('span', {class: `badge ${tone}`}, waiting ? 'waiting for you' : item.status), time),
+          h('div', {class: 'muted'}, `${payload.component}${payload.why ? ` · ${payload.why}` : ''}`),
+          item.summary ? h('div', {class: 'fact-source'}, item.summary) : null);
+      }
+      case 'check': {
+        const tone = {pass: 'ok', fail: 'bad', unverified: 'warn'}[item.result] || '';
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ ${item.title}`), h('span', {class: `badge ${tone}`}, item.result), time),
+          h('div', {class: 'muted'}, item.detail),
+          item.evidence_steps?.length ? h('div', {class: 'fact-source'}, `Steps ${item.evidence_steps.map(seq => `#${seq}`).join(', ')} · ${item.check}`) : null);
+      }
+      case 'coverage': {
+        const tone = {pass: 'ok', fail: 'bad', unverified: 'warn'}[item.result] || '';
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ Coverage: ${item.item} · ${item.case}`), h('span', {class: `badge ${tone}`}, item.result), time),
+          h('div', {class: 'muted'}, `${item.app}${item.note ? ` · ${item.note}` : ''}`),
+          item.evidence_steps?.length ? h('div', {class: 'fact-source'}, `Steps ${item.evidence_steps.map(seq => `#${seq}`).join(', ')}`) : null);
+      }
+      case 'control': return h('div', {class: 'muted'}, `${new Date(item.at).toLocaleTimeString()} · ${item.text}`);
+      case 'evidence': {
+        const src = `/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/evidence/${item.file}`;
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `📷 ${item.caption}`), time),
+          h('a', {href: src, target: '_blank', rel: 'noopener'}, h('img', {src, alt: item.caption, loading: 'lazy', style: 'width:100%;border-radius:.3rem;margin-top:.3rem'})),
+          h('div', {class: 'fact-source'}, `${item.component} ${item.page || ''} · ${item.source} · kept with this run, not sent to Claude`));
+      }
+      case 'verdict': {
+        const tone = {pass: 'ok', fail: 'bad', inconclusive: 'warn'}[item.verdict] || '';
+        return h('div', {class: 'step', style: 'white-space:normal'}, h('div', {class: 'row'}, h('strong', {}, 'Verdict'), h('span', {class: `badge ${tone}`}, item.verdict), time),
+          h('div', {}, item.summary),
+          h('div', {class: 'muted', style: 'font-size:.75rem'}, 'Supported by steps ', (item.evidence_steps || []).map((seq, index) =>
+            [index ? ', ' : '', h('a', {href: '#', onclick: event => { event.preventDefault(); trail.querySelector(`[data-seq="${seq}"]`)?.scrollIntoView({block: 'center'}); }}, `#${seq}`)])));
+      }
+      case 'approval': {
+        const details = item.details || {};
+        if (item.kind === 'plan' || item.kind === 'checkpoint') {
+          const note = h('input', {type: 'text', placeholder: 'Optional note to Claude', 'aria-label': 'Note to Claude'});
+          const decided = item.decision !== 'pending';
+          const plan = item.kind === 'plan';
+          const outcome = {approved: plan ? 'started' : 'continued', declined: plan ? 'not started' : 'stopped here'}[item.decision] || item.decision;
+          return h('div', {class: 'step approval', role: 'group', 'aria-label': plan ? 'Walkthrough plan' : 'Walkthrough checkpoint'},
+            h('div', {class: 'row'}, h('strong', {}, plan ? `Walkthrough: ${details.goal}` : `Step done: ${details.step_done}`),
+              h('span', {class: `badge ${item.decision === 'approved' ? 'ok' : decided ? 'warn' : 'warn'}`}, decided ? outcome : 'waiting for you'), time),
+            plan && details.versions ? details.versions.map(entry => entry.error ? h('div', {class: 'notice'}, `${entry.app}: ${entry.error}`) :
+              h('div', {class: 'muted', style: 'font-size:.8rem'}, h('strong', {}, entry.label), ` · source ${entry.source.version}${entry.source.build ? ` build ${entry.source.build}` : ''} (${entry.source.ref}) · installed `,
+                [...new Set(entry.installed.map(item => `${item.version}${item.build ? ` build ${item.build}` : ''}`))].join(', ') || 'nowhere',
+                entry.installed.some(item => !item.matches_source) ? h('span', {class: 'badge warn', style: 'margin-left:.3rem'}, 'differs from source') : h('span', {class: 'badge ok', style: 'margin-left:.3rem'}, 'matches source'))) : null,
+            plan ? h('ol', {}, (details.steps || []).map(step => h('li', {}, step)))
+              : h('dl', {}, h('dt', {}, 'Saw'), h('dd', {}, details.observed || '—'), h('dt', {}, 'Next'), h('dd', {}, details.next_step || 'Finished')),
+            item.note ? h('div', {class: 'muted'}, `Your note: ${item.note}`) : null,
+            decided ? null : [note, h('div', {class: 'row', style: 'margin-top:.4rem'},
+              h('button', {class: 'primary', type: 'button', onclick: () => decide(item.approval_id, 'approve', note.value)}, plan ? 'Start walkthrough' : (details.next_step ? 'Continue' : 'Finish')),
+              h('button', {class: 'danger', type: 'button', onclick: () => decide(item.approval_id, 'deny', note.value)}, plan ? 'Not now' : 'Stop here'))]);
+        }
+        const note = h('input', {type: 'text', placeholder: 'Optional note to Claude', 'aria-label': 'Note to Claude'});
+        const decided = item.decision !== 'pending';
+        const tone = {approved: 'ok', declined: 'bad', expired: 'warn', stopped: 'warn'}[item.decision] || 'warn';
+        return h('div', {class: 'step approval', role: 'group', 'aria-label': 'Approval request'},
+          h('div', {class: 'row'}, h('strong', {}, decided ? 'Change request' : 'Claude asks to change the lab'), h('span', {class: `badge ${tone}`}, item.decision), time),
+          h('dl', {}, h('dt', {}, 'Action'), h('dd', {}, h('code', {}, item.action)),
+            h('dt', {}, 'Reason'), h('dd', {}, details.reason || '—'),
+            h('dt', {}, 'Expected effect'), h('dd', {}, details.expected_effect || '—'),
+            h('dt', {}, 'Cleanup'), h('dd', {}, details.cleanup || '—'),
+            item.note ? [h('dt', {}, 'Your note'), h('dd', {}, item.note)] : null),
+          decided ? null : [note, h('div', {class: 'row', style: 'margin-top:.4rem'},
+            h('button', {class: 'primary', type: 'button', onclick: () => decide(item.approval_id, 'approve', note.value)}, 'Approve'),
+            h('button', {class: 'danger', type: 'button', onclick: () => decide(item.approval_id, 'deny', note.value)}, 'Decline'))]);
+      }
+      case 'summary': return h('div', {class: 'step'}, h('strong', {}, 'Changes made in this run'),
+        h('ul', {}, item.changes.map(change => h('li', {}, `${change.at}: ${change.description}; cleanup: ${change.cleanup}`))),
+        item.unresolved.length ? h('div', {class: 'notice'}, 'Not yet restored: ', item.unresolved.join('; ')) : h('div', {class: 'muted'}, 'No container is left stopped. Check that each Splunk change’s cleanup was done if you wanted it undone.'));
+      case 'error': return h('div', {class: 'step error'}, item.text);
+      case 'note': return h('div', {class: 'muted'}, item.text);
+      default: return null;
+    }
+  }
+  // Everything kept for a run: lab state and versions at its start, accounts, changes, screenshots, verdict.
+  function runRecord(run) {
+    const events = [...assistant.events.values()];
+    const shots = events.filter(item => item.type === 'evidence').length;
+    const failures = events.filter(item => (item.type === 'tool' && item.status === 'error') || item.type === 'error').length;
+    const state = run.lab_state;
+    const verdict = run.verdict;
+    return h('div', {class: 'row', style: 'font-size:.78rem'},
+      verdict ? h('span', {class: `badge ${{pass: 'ok', fail: 'bad', inconclusive: 'warn'}[verdict.verdict] || ''}`}, `verdict: ${verdict.verdict}`) : null,
+      h('button', {class: 'small', type: 'button', 'aria-pressed': String(Boolean(run.pinned)), title: run.pinned ? 'Kept until you unpin it' : 'Runs are kept for 30 days unless pinned',
+        onclick: async () => { await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/pin`, {pinned: !run.pinned}); fetchRun(run.id); loadAssistantRuns(); }},
+        run.pinned ? '📌 Pinned' : 'Pin run'),
+      h('details', {style: 'flex:1 0 100%'}, h('summary', {}, `Run record · ${events.filter(item => item.type === 'tool').length} tool steps · ${shots} screenshot(s) · ${failures} failure(s)`),
+        h('div', {class: 'muted'}, `Accounts: ${(run.accounts || []).join(', ') || 'none'} · changes: ${(run.changes || []).length} · `,
+          run.pinned ? 'pinned' : `kept until ${new Date(Date.parse(run.created_at) + 30 * 86400000).toLocaleDateString()}`, ' · ',
+          h('a', {href: `/observer/api/assistant/runs/${encodeURIComponent(run.id)}/record`}, 'Download record (JSON)')),
+        state ? h('details', {}, h('summary', {}, `Lab at the start (${new Date(state.checked_at).toLocaleString()})`),
+          h('table', {}, h('tbody', {}, state.components.filter(item => item.kind === 'splunk_enterprise' || item.kind === 'universal_forwarder').map(item => h('tr', {},
+            h('td', {}, item.id), h('td', {}, item.state || ''), h('td', {}, item.splunk_health || ''), h('td', {}, item.version || ''),
+            h('td', {class: 'muted'}, Object.entries(item.apps || {}).filter(([app]) => !/^(splunk_|search|launcher|learned|introspection|legacy|sample|alert_|appsbrowser|journald|python_upgrade|SplunkLight|splunk-|framework|gettingstarted|user-prefs|dmc|tos|default)/i.test(app)).map(([app, version]) => `${app} ${version || ''}`).join(', '))))))) : null));
+  }
+  function renderAssistant() {
+    if (!assistant.open) return;
+    const status = assistant.status;
+    const run = assistant.run;
+    const usage = [...assistant.events.values()].filter(item => item.type === 'usage');
+    const tokens = usage.reduce((sum, item) => [sum[0] + (item.input_tokens || 0), sum[1] + (item.output_tokens || 0)], [0, 0]);
+    const runPicker = h('select', {'aria-label': 'Conversation', onchange: event => selectRun(event.target.value || null)},
+      h('option', {value: '', selected: !run}, 'New conversation'),
+      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${item.pinned ? '📌 ' : ''}${item.origin === 'terminal' ? '⌨ ' : item.origin === 'check' ? '☑ ' : ''}${item.verdict ? `[${item.verdict}] ` : ''}${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
+    assistantHead.replaceChildren(
+      h('div', {class: 'row'}, h('strong', {style: 'flex:1'}, 'Claude'),
+        status ? h('span', {class: 'muted', style: 'font-size:.75rem'}, `${status.model} · effort ${status.effort}`) : null,
+        h('button', {class: 'small', type: 'button', onclick: () => setAssistantOpen(false)}, 'Close')),
+      runPicker,
+      h('div', {class: 'muted', style: 'font-size:.75rem'},
+        checkRun() ? 'A round of checks the observer ran itself, read-only and without an AI model. Each reading is a step; each result names the steps it rests on.' : terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC; you approve its changes there. This page follows a live session: Claude Code signs your focused view in as the test account and reads and clicks in it, each element highlighted. Pause or Take over holds its next action.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
+        run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
+    if (run && liveRun()) assistantHead.append(h('div', {class: 'row'},
+      pageRun.paused
+        ? h('button', {type: 'button', title: 'Let Claude act in the shared view again', onclick: () => controlRun('resume')}, 'Hand back to Claude')
+        : [h('button', {type: 'button', title: 'Hold Claude’s next action in the shared view', onclick: () => controlRun('pause')}, 'Pause'),
+           h('button', {type: 'button', title: 'Use the view yourself; Claude waits until you hand it back', onclick: () => controlRun('takeover')}, 'Take over')],
+      h('span', {class: 'muted', style: 'font-size:.75rem'}, pageRun.paused ? 'Claude’s next action waits for you.' : 'Claude acts in your focused view.')));
+    if (run) assistantHead.append(runRecord(run));
+    const nearBottom = trail.scrollHeight - trail.scrollTop - trail.clientHeight < 80;
+    const steps = [...assistant.events.values()].sort((a, b) => a.seq - b.seq).map(item => {
+      const node = stepNode(item);
+      if (node) { node.dataset.seq = item.seq; node.title = node.title || `Step #${item.seq}`; }
+      return node;
+    }).filter(Boolean);
+    if (liveRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, checkRun() ? 'Checks are running…' : terminalRun() ? 'Claude Code is working in the terminal…' : 'Claude is working…'));
+    if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is p-hq-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
+    trail.replaceChildren(...steps);
+    if (nearBottom) trail.scrollTop = trail.scrollHeight;
+    const parts = [];
+    if (assistant.error) parts.push(h('div', {class: 'notice'}, assistant.error));
+    if (status && !status.sdk_available) parts.push(h('div', {class: 'notice'}, 'The anthropic Python package is not installed for this observer. Start it with the project’s .venv/bin/python.'));
+    if (status && !status.configured) {
+      const keyInput = h('input', {type: 'password', placeholder: 'sk-ant-…', autocomplete: 'off', 'aria-label': 'Anthropic API key'});
+      parts.push(h('div', {}, h('div', {class: 'muted', style: 'margin-bottom:.3rem'}, 'Add an Anthropic API key (console.anthropic.com → API keys). It is saved only on the lab PC in a file only you can read, and never shown again.'),
+        keyInput, h('div', {class: 'row', style: 'margin-top:.4rem'}, h('button', {class: 'primary', type: 'button', onclick: () => saveKey(keyInput.value)}, 'Save key'))));
+    } else if (status) {
+      parts.push(promptInput, h('div', {class: 'row'},
+        h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() && !terminalRun() && !checkRun() ? 'Send follow-up' : 'Send'),
+        activeRun() ? h('button', {class: 'danger', type: 'button', onclick: async () => { await post(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/stop`); fetchRun(run.id); }}, 'Stop') : null,
+        h('span', {class: 'muted', style: 'font-size:.75rem;flex:1'}, '⌘/Ctrl + Enter to send'),
+        h('button', {class: 'small', type: 'button', title: `Key ${status.hint || ''} from ${status.source || ''}`, onclick: () => { if (confirm('Remove the saved Anthropic API key from the lab PC?')) saveKey(''); }}, 'Remove key')));
+    }
+    composer.replaceChildren(...parts);
+  }
+  document.getElementById('assistant-toggle').addEventListener('click', () => setAssistantOpen(!assistant.open));
+  try { if (localStorage.getItem('assistant-open')) setAssistantOpen(true); } catch (_error) { /* storage unavailable */ }
+
   // --- wiring -------------------------------------------------------------------------
   for (const button of document.querySelectorAll('nav button')) button.addEventListener('click', () => { tab = button.dataset.tab; render(); });
   document.getElementById('discover').addEventListener('click', async () => { await post('/observer/api/discover'); setTimeout(refresh, 8000); });
   document.getElementById('capture').addEventListener('click', async () => { await post('/observer/api/captures'); refresh(); });
+  window.addEventListener('hashchange', () => { readAddress(); render(); });
   (async () => {
     await loadLayout();
     await refresh();

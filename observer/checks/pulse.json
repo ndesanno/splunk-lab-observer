@@ -1,0 +1,419 @@
+[
+ {
+  "id": "spoke-bravo-dataset-count",
+  "ticket": 15,
+  "app": "federation_pulse_spoke",
+  "item": "section:pulse_spoke_status:Dataset inventory",
+  "case": "normal",
+  "title": "Bravo Spoke counts the same datasets as Splunk's own index list",
+  "shown": {
+   "what": "dataset_count from the Spoke's status search on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "dataset_count"
+  },
+  "expected": {
+   "what": "Splunk's own index list on p-bravo, filtered by the Spoke's dataset rule (enabled, not internal, not Pulse's own, not history or summary, not federated)",
+   "search": {
+    "component": "p-bravo",
+    "query": "| rest splunk_server=local count=0 /services/data/indexes datatype=all | search disabled=0 title!=\"_*\" title!=\"federation_pulse\" title!=\"federation_pulse_hq\" title!=\"history\" title!=\"summary\" title!=\"federated:*\" | stats dc(title) as value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "spoke-bravo-published-all",
+  "ticket": 15,
+  "app": "federation_pulse_spoke",
+  "item": "section:pulse_spoke_status:Latest digest",
+  "case": "normal",
+  "title": "Bravo Spoke's latest digest carries every dataset in the index list",
+  "shown": {
+   "what": "published_dataset_count from the Spoke's status search on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "published_dataset_count"
+  },
+  "expected": {
+   "what": "Splunk's own index list on p-bravo, filtered by the Spoke's dataset rule (enabled, not internal, not Pulse's own, not history or summary, not federated)",
+   "search": {
+    "component": "p-bravo",
+    "query": "| rest splunk_server=local count=0 /services/data/indexes datatype=all | search disabled=0 title!=\"_*\" title!=\"federation_pulse\" title!=\"federation_pulse_hq\" title!=\"history\" title!=\"summary\" title!=\"federated:*\" | stats dc(title) as value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "spoke-bravo-publication-complete",
+  "ticket": 15,
+  "app": "federation_pulse_spoke",
+  "item": "search:Pulse Spoke - native publisher status",
+  "case": "normal",
+  "title": "Bravo Spoke reports its publication as complete",
+  "shown": {
+   "what": "publication_state from the Spoke's status search on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "publication_state"
+  },
+  "expected": {
+   "what": "The app's rule: a digest that carries every dataset is complete",
+   "value": "complete"
+  }
+ },
+ {
+  "id": "spoke-bravo-identity",
+  "ticket": 15,
+  "app": "federation_pulse_spoke",
+  "item": "section:pulse_spoke_status:Federation readiness",
+  "case": "normal",
+  "title": "Bravo Spoke identifies itself by its own server GUID",
+  "shown": {
+   "what": "current_deployment_id from the Spoke's status search on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "current_deployment_id"
+  },
+  "expected": {
+   "what": "The server GUID from splunkd server/info on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| rest splunk_server=local /services/server/info | eval value=lower(guid) | fields value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "spoke-alpha-identity-agrees",
+  "ticket": 16,
+  "app": "federation_pulse_spoke",
+  "item": "section:pulse_spoke_status:Federation readiness",
+  "case": "normal",
+  "title": "Every Alpha cluster member reports the same deployment identity",
+  "compare": "all_equal",
+  "shown": {
+   "what": "current_deployment_id from the Spoke's status search on each Alpha member",
+   "search": {
+    "components": [
+     "p-alpha-sh1",
+     "p-alpha-sh2",
+     "p-alpha-sh3"
+    ],
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "current_deployment_id"
+  }
+ },
+ {
+  "id": "spoke-alpha-dataset-count",
+  "ticket": 16,
+  "app": "federation_pulse_spoke",
+  "item": "section:pulse_spoke_status:Dataset inventory",
+  "case": "normal",
+  "title": "Every Alpha cluster member counts the same datasets as the indexers hold",
+  "shown": {
+   "what": "dataset_count from the Spoke's status search on each Alpha member",
+   "search": {
+    "components": [
+     "p-alpha-sh1",
+     "p-alpha-sh2",
+     "p-alpha-sh3"
+    ],
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "dataset_count"
+  },
+  "expected": {
+   "what": "Splunk's own index list on each Alpha indexer, filtered by the Spoke's dataset rule (enabled, not internal, not Pulse's own, not history or summary, not federated)",
+   "search": {
+    "components": [
+     "p-alpha-idx1",
+     "p-alpha-idx2",
+     "p-alpha-idx3"
+    ],
+    "query": "| rest splunk_server=local count=0 /services/data/indexes datatype=all | search disabled=0 title!=\"_*\" title!=\"federation_pulse\" title!=\"federation_pulse_hq\" title!=\"history\" title!=\"summary\" title!=\"federated:*\" | stats dc(title) as value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "spoke-versions-agree",
+  "ticket": 16,
+  "app": "federation_pulse_spoke",
+  "item": "screen:pulse_spoke_status",
+  "case": "normal",
+  "title": "Every instance with Pulse Spoke runs the same version and build",
+  "compare": "all_equal",
+  "shown": {
+   "what": "Installed version and build of Pulse Spoke on each component",
+   "installed": "federation_pulse_spoke"
+  }
+ },
+ {
+  "id": "hq-bravo-dataset-count",
+  "ticket": 17,
+  "app": "federation_pulse_hq",
+  "item": "section:pulse_hq_overview:Dataset coverage",
+  "case": "normal",
+  "title": "HQ shows the same dataset count for Bravo as Bravo's own index list",
+  "shown": {
+   "what": "dataset_count for bravo_prov from HQ's latest observations on p-hq-sh1",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"bravo_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "dataset_count"
+  },
+  "expected": {
+   "what": "Splunk's own index list on p-bravo, filtered by the Spoke's dataset rule (enabled, not internal, not Pulse's own, not history or summary, not federated)",
+   "search": {
+    "component": "p-bravo",
+    "query": "| rest splunk_server=local count=0 /services/data/indexes datatype=all | search disabled=0 title!=\"_*\" title!=\"federation_pulse\" title!=\"federation_pulse_hq\" title!=\"history\" title!=\"summary\" title!=\"federated:*\" | stats dc(title) as value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "hq-bravo-identity",
+  "ticket": 17,
+  "app": "federation_pulse_hq",
+  "item": "section:pulse_hq_overview:Deployment reporting",
+  "case": "normal",
+  "title": "HQ shows Bravo under Bravo's own server GUID",
+  "shown": {
+   "what": "deployment_id for bravo_prov from HQ's latest observations on p-hq-sh1",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"bravo_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "deployment_id"
+  },
+  "expected": {
+   "what": "The server GUID from splunkd server/info on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| rest splunk_server=local /services/server/info | eval value=lower(guid) | fields value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "hq-bravo-evidence-complete",
+  "ticket": 17,
+  "app": "federation_pulse_hq",
+  "item": "section:pulse_hq_overview:Are we getting the full picture?",
+  "case": "normal",
+  "title": "HQ's evidence state for Bravo matches what Bravo published",
+  "shown": {
+   "what": "evidence_state for bravo_prov from HQ's latest observations on p-hq-sh1",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"bravo_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "evidence_state"
+  },
+  "expected": {
+   "what": "publication_state from the Spoke's status search on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "publication_state"
+  }
+ },
+ {
+  "id": "hq-alpha-dataset-count",
+  "ticket": 17,
+  "app": "federation_pulse_hq",
+  "item": "section:pulse_hq_overview:Dataset coverage",
+  "case": "normal",
+  "title": "HQ shows the same dataset count for Alpha as the Alpha indexers hold",
+  "shown": {
+   "what": "dataset_count for alpha_prov from HQ's latest observations on p-hq-sh1",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"alpha_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "dataset_count"
+  },
+  "expected": {
+   "what": "Splunk's own index list on p-alpha-idx1, filtered by the Spoke's dataset rule (enabled, not internal, not Pulse's own, not history or summary, not federated)",
+   "search": {
+    "component": "p-alpha-idx1",
+    "query": "| rest splunk_server=local count=0 /services/data/indexes datatype=all | search disabled=0 title!=\"_*\" title!=\"federation_pulse\" title!=\"federation_pulse_hq\" title!=\"history\" title!=\"summary\" title!=\"federated:*\" | stats dc(title) as value"
+   },
+   "field": "value"
+  }
+ },
+ {
+  "id": "hq-alpha-single-record",
+  "ticket": 17,
+  "app": "federation_pulse_hq",
+  "item": "search:Pulse HQ - latest observations",
+  "case": "normal",
+  "title": "HQ holds one record for the Alpha cluster, not one per member",
+  "shown": {
+   "what": "Number of deployment records for alpha_prov in HQ's latest observations",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"alpha_prov\" | stats dc(deployment_id) as value",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "value"
+  },
+  "expected": {
+   "what": "The app's rule since build 100639: a search head cluster is one deployment",
+   "value": 1
+  }
+ },
+ {
+  "id": "hq-members-agree",
+  "ticket": 18,
+  "app": "federation_pulse_hq",
+  "item": "search:Pulse HQ - latest observations",
+  "case": "normal",
+  "title": "Every HQ cluster member shows the same dataset count for Bravo",
+  "compare": "all_equal",
+  "shown": {
+   "what": "dataset_count for bravo_prov from latest observations on each HQ member",
+   "search": {
+    "components": [
+     "p-hq-sh1",
+     "p-hq-sh2",
+     "p-hq-sh3"
+    ],
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"bravo_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "dataset_count"
+  }
+ },
+ {
+  "id": "hq-registry-alpha-identity",
+  "ticket": 18,
+  "app": "federation_pulse_hq",
+  "item": "search:Pulse HQ - expected registry",
+  "case": "incorrect",
+  "title": "HQ's registry row for Alpha uses the identity Alpha reports",
+  "shown": {
+   "what": "deployment_id of the agency alpha row in HQ's expected registry",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - expected registry\" | search agency_id=\"alpha\" | head 1",
+    "app": "federation_pulse_hq"
+   },
+   "field": "deployment_id"
+  },
+  "expected": {
+   "what": "deployment_id for alpha_prov from HQ's latest observations",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"alpha_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "deployment_id"
+  }
+ },
+ {
+  "id": "hq-versions-agree",
+  "ticket": 18,
+  "app": "federation_pulse_hq",
+  "item": "screen:pulse_hq_overview",
+  "case": "normal",
+  "title": "Every HQ cluster member runs the same Pulse HQ version and build",
+  "compare": "all_equal",
+  "shown": {
+   "what": "Installed version and build of Pulse HQ on each component",
+   "installed": "federation_pulse_hq"
+  }
+ },
+ {
+  "id": "trace-bravo-published-to-hq",
+  "ticket": 19,
+  "app": "federation_pulse_hq",
+  "item": "section:pulse_hq_overview:Dataset coverage",
+  "case": "normal",
+  "title": "Trace, Bravo: what the Spoke published is what HQ received",
+  "shown": {
+   "what": "dataset_count for bravo_prov from HQ's latest observations",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"bravo_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "dataset_count"
+  },
+  "expected": {
+   "what": "published_dataset_count from the Spoke's status search on p-bravo",
+   "search": {
+    "component": "p-bravo",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "published_dataset_count"
+  }
+ },
+ {
+  "id": "trace-alpha-published-to-hq",
+  "ticket": 19,
+  "app": "federation_pulse_hq",
+  "item": "section:pulse_hq_overview:Dataset coverage",
+  "case": "normal",
+  "title": "Trace, Alpha cluster: what the Spoke published is what HQ received",
+  "shown": {
+   "what": "dataset_count for alpha_prov from HQ's latest observations",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| savedsearch \"Pulse HQ - latest observations\" | search provider_name=\"alpha_prov\" | sort - dataset_count | head 1",
+    "app": "federation_pulse_hq",
+    "earliest": "-7d@d"
+   },
+   "field": "dataset_count"
+  },
+  "expected": {
+   "what": "published_dataset_count from the Spoke's status search on p-alpha-sh1",
+   "search": {
+    "component": "p-alpha-sh1",
+    "query": "| savedsearch \"Pulse Spoke - native publisher status\"",
+    "app": "federation_pulse_spoke",
+    "earliest": "-30d@d"
+   },
+   "field": "published_dataset_count"
+  }
+ }
+]

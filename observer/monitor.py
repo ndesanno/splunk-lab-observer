@@ -11,12 +11,15 @@ import time
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
+# Read-only checks of what the apps report run on their own interval, without an AI model.
+from observer.checks import INTERVAL_SECONDS as CHECK_INTERVAL_SECONDS
 from observer.store import utc_now
 
 
 HEALTH_INTERVAL_SECONDS = 60
 DISCOVERY_INTERVAL_SECONDS = 300
 PRUNE_INTERVAL_SECONDS = 6 * 60 * 60
+FIRST_CHECK_AFTER_SECONDS = 10 * 60
 
 
 def previous_signal(store, component):
@@ -30,9 +33,11 @@ class Monitor:
         self.lab = lab
         self.store = store
         self.capture = capture
+        self.checks = None
+        self.started = time.time()
         self.stop_event = threading.Event()
         self.thread = None
-        self.last = {"discovery": 0.0, "health": 0.0, "prune": 0.0}
+        self.last = {"discovery": 0.0, "health": 0.0, "prune": 0.0, "checks": 0.0}
         self.status = {"discovery_at": None, "health_at": None, "last_error": None}
 
     def start(self):
@@ -55,6 +60,10 @@ class Monitor:
                     if self.capture:
                         self.capture.prune()
                     self.last["prune"] = now
+                due = self.last["checks"] + CHECK_INTERVAL_SECONDS if self.last["checks"] else self.started + FIRST_CHECK_AFTER_SECONDS
+                if self.checks and now >= due:
+                    self.last["checks"] = now
+                    threading.Thread(target=self.checks.run_round, name="observer-checks", daemon=True).start()
             except Exception as error:  # keep monitoring through one bad poll
                 self.status["last_error"] = f"{utc_now()} {error.__class__.__name__}: {error}"
             self.stop_event.wait(5)

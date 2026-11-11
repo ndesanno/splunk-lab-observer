@@ -1,10 +1,13 @@
 """Serve the observer page and a same-origin view of one Splunk component."""
 
 import argparse
+import gzip
+import hashlib
 import http.client
 import json
 import re
 import shutil
+import socket
 import ssl
 import threading
 from datetime import datetime, timezone
@@ -24,13 +27,20 @@ LOGIN_PAGE = Path(__file__).with_name("login.html")
 MISSING_CAPTURE_SECONDS = 15 * 60
 COMPONENT_PATH = re.compile(r"^/lab/([A-Za-z0-9][A-Za-z0-9_.-]{0,62})/")
 COOKIE_ROOT_PATH = re.compile(r"(;\s*path=)/(?=;|$)", re.I)
+COMPRESSIBLE = ("text/", "application/json", "application/javascript")
+# A browser keeps its connections open between requests; an idle one is dropped after this long.
+IDLE_SECONDS = 75
+UPSTREAM_TIMEOUT_SECONDS = 60
+STALE_UPSTREAM = (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
 
 
 class ObserverServer(ThreadingHTTPServer):
     daemon_threads = True
+    # A Splunk page asks for dozens of files at once and a wall holds several pages.
+    request_queue_size = 128
 
-    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None):
+    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None, checks=None):
         secure_mode = any(item is not None for item in (auth_file, certfile, keyfile))
         if secure_mode and not all(item is not None for item in (auth_file, certfile, keyfile)):
             raise ValueError("LAN mode requires authentication, certificate, and private key files")
@@ -55,13 +65,36 @@ class ObserverServer(ThreadingHTTPServer):
         self.upstream_origin = f"http://{self.upstream_host}:{self.upstream_port}"
         self.scheme = "https" if secure_mode else "http"
         self.allowed_hosts = {address[0]} if secure_mode else {"127.0.0.1", "localhost"}
-        self.lab, self.store, self.capture, self.monitor = lab, store, capture, monitor
+        self.lab, self.store, self.capture, self.monitor, self.assistant = lab, store, capture, monitor, assistant
+        self.coverage = coverage
+        self.checks = checks
+        self.tls_context = context
+        self.summary_cache = (None, None)  # (store version and background status, summary)
         super().__init__(address, ObserverHandler)
-        if context is not None:
-            self.socket = context.wrap_socket(self.socket, server_side=True)
+
+    def process_request_thread(self, request, client_address):
+        # Headers and body are written separately; on a kept connection the body would otherwise
+        # wait for the browser's delayed acknowledgement of the headers.
+        request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # The TLS handshake runs here, in the connection's own thread: on the listening socket it
+        # would run in the accept loop, where one slow client holds up every other connection.
+        if self.tls_context is not None:
+            try:
+                request.settimeout(10)
+                request = self.tls_context.wrap_socket(request, server_side=True)
+            except (OSError, ssl.SSLError):
+                self.shutdown_request(request)
+                return
+        super().process_request_thread(request, client_address)
 
 
 class ObserverHandler(BaseHTTPRequestHandler):
+    # Connections stay open between requests, so a page's many files do not each pay for a new
+    # TCP and TLS handshake. Every response therefore states its length or is sent in chunks.
+    protocol_version = "HTTP/1.1"
+    timeout = IDLE_SECONDS
+    upstream = None
+
     def do_GET(self):
         self._route()
 
@@ -80,7 +113,30 @@ class ObserverHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._route()
 
+    def finish(self):
+        if self.upstream is not None:
+            self.upstream.close()
+        super().finish()
+
     def _route(self):
+        self.body_read = False
+        try:
+            self._dispatch()
+        finally:
+            if self._body_unread():
+                self.close_connection = True
+
+    def _body_unread(self):
+        """A request body nobody read would be taken for the next request on this connection."""
+        sent = self.headers.get("Content-Length", "0") not in {"", "0"} or "Transfer-Encoding" in self.headers
+        return sent and not self.body_read
+
+    def _end_headers(self):
+        if self._body_unread():
+            self.send_header("Connection", "close")
+        self.end_headers()
+
+    def _dispatch(self):
         browser_origin = self._browser_origin()
         if browser_origin is None or not self._same_origin_request(browser_origin):
             self._send(403, b"Request origin not allowed", "text/plain; charset=utf-8")
@@ -107,7 +163,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 ("Set-Cookie", f"{COOKIE_NAME}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict")
             ])
         elif self.path == "/observer/" and self.command == "GET":
-            self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8", cache="no-cache", revalidate=True)
         elif self.path.startswith("/observer/"):
             self._observer_route()
         elif COMPONENT_PATH.match(self.path):
@@ -127,7 +183,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")[1:]  # after "observer"
         get, post = self.command == "GET", self.command == "POST"
         if parts == ["api", "lab"] and get:
-            self._json(200, self._lab_summary())
+            self._json(200, self._cached_lab_summary(), revalidate=True)
         elif len(parts) == 3 and parts[:2] == ["api", "components"] and get:
             component = lab.component(parts[2])
             if component is None:
@@ -159,6 +215,29 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self._json(200, {"component": parts[2], "source": f"podman logs --tail 60 {parts[2]}", "checked_at": checked_at,
                              "log": text, "resources": store.latest(parts[2], "resources"),
                              "container": store.latest(parts[2], "container")})
+        elif len(parts) == 4 and parts[:2] == ["api", "components"] and parts[3] == "signin" and post:
+            # Sign the owner's view in as the account the AI tests with, so the owner watches the same session.
+            operator = self.server.assistant.operator if self.server.assistant else None
+            if parts[2] not in lab.web_components():
+                self._json(404, {"error": "unknown_component"})
+                return
+            if operator is None:
+                self._json(409, {"error": "No test account: run the lab's ./observer.sh operator first"})
+                return
+            try:
+                cookies = operator.web_session(parts[2])
+            except (OSError, RuntimeError, ValueError) as error:
+                self._json(502, {"error": str(error)[:200]})
+                return
+            body = json.dumps({"account": operator.username, "component": parts[2], "signed_in_at": utc_now()}).encode()
+            self.send_response(200)
+            for header in cookies:
+                self.send_header("Set-Cookie", COOKIE_ROOT_PATH.sub(lambda match: f"{match.group(1)}/lab/{parts[2]}/", header))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         elif len(parts) == 4 and parts[:2] == ["api", "components"] and parts[3] == "screens" and get:
             component = lab.component(parts[2])
             if component is None:
@@ -202,6 +281,49 @@ class ObserverHandler(BaseHTTPRequestHandler):
             components = [item for item in body.get("components", []) if item in lab.web_components()] or None
             threading.Thread(target=self.server.capture.run, args=(components,), daemon=True).start()
             self._json(202, {"started": True})
+        elif parts == ["api", "coverage"] and get and self.server.coverage:
+            self._json(200, self.server.coverage.full_map())
+        elif parts == ["api", "coverage", "marks"] and post and self.server.coverage:
+            body = self._read_json()
+            if body is None:
+                return
+            coverage = self.server.coverage
+            source = coverage.source_for(body.get("app"))
+            if source is None:
+                self._json(404, {"error": "unknown_app"})
+                return
+            try:
+                status = coverage.record(source["app"], str(body.get("item") or ""), body.get("case"), body.get("status"),
+                                         verdict=body.get("verdict"), run_id=body.get("run_id"),
+                                         evidence=body.get("evidence"), note=body.get("note"), by="owner")
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(200, {"status": status})
+        elif parts == ["api", "checks"] and get and self.server.checks:
+            self._json(200, self.server.checks.summary())
+        elif parts == ["api", "checks", "run"] and post and self.server.checks:
+            body = self._read_json()
+            if body is None:
+                return
+            ids = [str(item) for item in body.get("ids") or []][:200] or None
+            if self.server.checks.status["running"]:
+                self._json(409, {"error": "A round of checks is already running"})
+                return
+            threading.Thread(target=self._background, args=(lambda: self.server.checks.run_round(ids, reason="asked for by the owner"),),
+                             daemon=True).start()
+            self._json(202, {"started": True})
+        elif parts[:2] == ["api", "assistant"] and self.server.assistant:
+            self._assistant_route(parts[2:], query, get, post)
+        elif len(parts) == 3 and parts[:2] == ["api", "packages"] and get:
+            # App packages the AI may upload through Splunk Web in the owner's view: only .tgz/.spl files
+            # placed in the data directory's packages/ folder on this workstation.
+            folder = (store.data_dir / "packages").resolve()
+            target = (folder / parts[2]).resolve()
+            if target.parent != folder or target.suffix not in {".tgz", ".spl"} or not target.is_file():
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+            else:
+                self._send(200, target.read_bytes(), "application/gzip")
         elif len(parts) == 3 and parts[0] == "captures" and get and self.server.capture:
             capture_path = self.server.capture.path_for(f"{parts[1]}/{parts[2]}")
             if capture_path is None:
@@ -211,12 +333,130 @@ class ObserverHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
+    def _assistant_route(self, parts, query, get, post):
+        assistant = self.server.assistant
+        if parts == [] and get:
+            self._json(200, {"status": assistant.status(), "runs": self.server.store.runs()})
+        elif parts == ["live"] and get:
+            self._json(200, {"latest": self.server.store.latest_run()})
+        elif parts == ["key"] and post:
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                assistant.key.save(body.get("api_key"))
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(200, {"status": assistant.status()})
+        elif parts == ["runs"] and post:
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                run = assistant.start(str(body.get("prompt") or ""))
+            except (RuntimeError, ValueError) as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(202, run.view())
+        elif len(parts) == 2 and parts[0] == "runs" and get:
+            run = assistant.get(parts[1])
+            since = query.get("since", ["0"])[0]
+            if run is None:
+                self._json(404, {"error": "unknown_run"})
+            else:
+                if run.record.get("status") in {"running", "waiting_for_approval"}:
+                    self.server.store.page_watched(parts[1])  # a page is watching, so the shared view can be used
+                self._json(200, run.view(int(since) if since.isdigit() else 0))
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "messages" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                run = assistant.start(str(body.get("prompt") or ""), run_id=parts[1])
+            except KeyError:
+                self._json(404, {"error": "unknown_run"})
+                return
+            except (RuntimeError, ValueError) as error:
+                self._json(400, {"error": str(error)})
+                return
+            self._json(202, run.view())
+        elif len(parts) == 4 and parts[0] == "runs" and parts[2] == "page" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            if not self.server.store.answer_page_request(parts[1], parts[3], body.get("ok"), body.get("result")):
+                self._json(409, {"error": "no_pending_request"})
+                return
+            self._json(200, {"accepted": True})
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "control" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.runs.get(parts[1])
+            action = body.get("action")
+            if run is None and action in {"pause", "takeover", "resume"} and self.server.store.run(parts[1]):
+                self.server.store.page_watched(parts[1], paused=action != "resume")  # a terminal session waits
+                self._json(200, {"paused": action != "resume"})
+                return
+            if run is None or not run.control(action):
+                self._json(409, {"error": "invalid_control"})
+                return
+            self._json(200, {"paused": run.record.get("paused", False)})
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "pin" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.pin(parts[1], body.get("pinned"))
+            self._json(200 if run else 404, {"pinned": run.record.get("pinned") if run else None})
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "record" and get:
+            run = assistant.get(parts[1])
+            if run is None:
+                self._json(404, {"error": "unknown_run"})
+                return
+            body = json.dumps(run.view(), indent=1).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", f'attachment; filename="observer-run-{parts[1]}.json"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        elif len(parts) >= 4 and parts[0] == "runs" and parts[2] == "evidence" and get:
+            path = assistant.evidence_path(parts[1], "/".join(parts[3:]))
+            if path is None:
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+            else:
+                self._send(200, path.read_bytes(), "image/jpeg", cache="private, max-age=86400")
+        elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "stop" and post:
+            self._json(200 if assistant.stop(parts[1]) else 404, {"stopping": True})
+        elif len(parts) == 4 and parts[0] == "runs" and parts[2] == "approvals" and post:
+            body = self._read_json()
+            if body is None:
+                return
+            run = assistant.runs.get(parts[1])
+            if run is None or not run.decide(parts[3], body.get("decision"), body.get("note")):
+                self._json(409, {"error": "no_pending_approval"})
+                return
+            self._json(200, {"decided": True})
+        else:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+
     def _background(self, task):
         try:
             task()
         except Exception as error:
             if self.server.monitor:
                 self.server.monitor.status["last_error"] = f"{utc_now()} {error.__class__.__name__}: {error}"
+
+    def _cached_lab_summary(self):
+        """The summary changes only when something is recorded, so open pages share one copy."""
+        server = self.server
+        key = (server.store.version, json.dumps([server.monitor.status if server.monitor else None,
+                                                 server.capture.status if server.capture else None], default=str))
+        if server.summary_cache[0] != key:
+            server.summary_cache = (key, self._lab_summary())
+        return server.summary_cache[1]
 
     def _lab_summary(self):
         lab, store = self.server.lab, self.server.store
@@ -242,6 +482,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
         snapshot["capture"] = self.server.capture.status if self.server.capture else None
         snapshot["recent_changes"] = store.changes(limit=40)
         snapshot["login_required"] = self.server.login is not None
+        operator = self.server.assistant.operator if self.server.assistant else None
+        snapshot["test_account"] = operator.username if operator else None
         snapshot["history_from"] = store.earliest()
         return snapshot
 
@@ -291,6 +533,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid_request"})
             return None
         try:
+            self.body_read = True
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             self._json(400, {"error": "invalid_json"})
@@ -300,8 +543,9 @@ class ObserverHandler(BaseHTTPRequestHandler):
             return None
         return body
 
-    def _json(self, status, value):
-        self._send(status, json.dumps(value).encode(), "application/json")
+    def _json(self, status, value, revalidate=False):
+        self._send(status, json.dumps(value).encode(), "application/json", cache="no-cache" if revalidate else "no-store",
+                   revalidate=revalidate)
 
     def _browser_origin(self):
         try:
@@ -344,6 +588,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         if length < 0 or length > 4096 or not self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
             self._send(400, b"Invalid login request", "text/plain; charset=utf-8")
             return
+        self.body_read = True
         fields = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
         password = fields.get("password", [""])[0]
         if not self.server.login.password_matches(password):
@@ -361,21 +606,62 @@ class ObserverHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for key, value in headers:
             self.send_header(key, value)
-        self.end_headers()
+        self._end_headers()
 
-    def _send(self, status, body, content_type, cache="no-store"):
+    def _send(self, status, body, content_type, cache="no-store", revalidate=False):
+        """Send a complete response. Large text is compressed for browsers that accept it; with
+        revalidate the response carries a tag, and a request that already has that body gets 304."""
+        headers = [("Content-Type", content_type), ("Cache-Control", cache), ("X-Frame-Options", "DENY")]
+        if revalidate and status == 200:
+            tag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+            headers.append(("ETag", tag))
+            if tag in [item.strip() for item in self.headers.get("If-None-Match", "").split(",")]:
+                status, body = 304, b""
+        if len(body) > 1024 and content_type.startswith(COMPRESSIBLE):
+            headers.append(("Vary", "Accept-Encoding"))
+            if "gzip" in self.headers.get("Accept-Encoding", ""):
+                body = gzip.compress(body, compresslevel=5)
+                headers.append(("Content-Encoding", "gzip"))
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", cache)
-        self.send_header("X-Frame-Options", "DENY")
-        self.end_headers()
-        self.wfile.write(body)
+        for key, value in headers:
+            self.send_header(key, value)
+        if status != 304:
+            self.send_header("Content-Length", str(len(body)))
+        self._end_headers()
+        if self.command != "HEAD" and status != 304:
+            self.wfile.write(body)
+
+    def _upstream_response(self, body, headers):
+        """Ask the router, on this connection's own upstream connection when it has one. A kept
+        connection the router has since closed fails before any reply; that request is sent again."""
+        for attempt in (0, 1):
+            reused = self.upstream is not None
+            if not reused:
+                self.upstream = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port,
+                                                           timeout=UPSTREAM_TIMEOUT_SECONDS)
+            try:
+                self.upstream.request(self.command, self.path, body=body, headers=headers)
+                return self.upstream.getresponse()
+            except STALE_UPSTREAM:
+                self._drop_upstream()
+                if not reused or attempt:
+                    raise
+            except (OSError, http.client.HTTPException):
+                self._drop_upstream()
+                raise
+
+    def _drop_upstream(self):
+        if self.upstream is not None:
+            self.upstream.close()
+            self.upstream = None
 
     def _proxy(self, browser_origin):
         component = COMPONENT_PATH.match(self.path).group(1)
         if self.server.lab is not None and component not in self.server.lab.web_components():
             self._send(404, b"Unknown component", "text/plain; charset=utf-8")
+            return
+        if "Transfer-Encoding" in self.headers:
+            self._send(411, b"Send the request with a Content-Length", "text/plain; charset=utf-8")
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -385,6 +671,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         if length < 0 or length > 8 * 1024 * 1024:
             self._send(413, b"Request too large", "text/plain; charset=utf-8")
             return
+        self.body_read = True
         body = self.rfile.read(length) if length else None
         headers = {key: value for key, value in self.headers.items() if key.lower() not in HOP_HEADERS | {"host", "content-length"}}
         if self.server.login and "Cookie" in headers:
@@ -397,11 +684,13 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if key in headers:
                 headers[key] = headers[key].replace(browser_origin, self.server.upstream_origin, 1)
 
-        connection = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port, timeout=15)
         response_started = False
         try:
-            connection.request(self.command, self.path, body=body, headers=headers)
-            response = connection.getresponse()
+            response = self._upstream_response(body, headers)
+            # Without a length the body is sent in chunks as it arrives, which HTTP/1.0 clients cannot read.
+            bodiless = self.command == "HEAD" or response.status in {204, 304} or response.status < 200
+            sized = response.getheader("Content-Length") is not None
+            chunked = not bodiless and not sized and self.request_version != "HTTP/1.0"
             self.send_response(response.status, response.reason)
             response_started = True
             for key, value in response.getheaders():
@@ -414,16 +703,32 @@ class ObserverHandler(BaseHTTPRequestHandler):
                     # for "/" would collide across components. Keep each to its component's path.
                     value = COOKIE_ROOT_PATH.sub(lambda match: f"{match.group(1)}/lab/{component}/", value)
                 self.send_header(key, value)
-            self.send_header("Connection", "close")
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            elif not bodiless and not sized:
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
-            if self.command != "HEAD":
+            if bodiless:
+                response.read()
+            elif chunked:
+                while True:
+                    block = response.read1(64 * 1024)
+                    if not block:
+                        break
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(block), block))
+                    self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+            else:
                 shutil.copyfileobj(response, self.wfile, length=64 * 1024)
-            self.close_connection = True
+            if response.will_close:
+                self._drop_upstream()
         except (OSError, http.client.HTTPException):
-            if not response_started:
+            self._drop_upstream()
+            if response_started:
+                self.close_connection = True  # the reply was cut short; the browser must not wait for more
+            else:
                 self._send(502, b"Component unavailable", "text/plain; charset=utf-8")
-        finally:
-            connection.close()
 
     def log_message(self, _format, *_args):
         # Browser requests can contain credentials or sensitive query parameters.
@@ -431,14 +736,17 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
 
 def create_server(address=("127.0.0.1", 8765), router_url="http://127.0.0.1:8190", *, auth_file=None, certfile=None, keyfile=None,
-                  lab=None, store=None, capture=None, monitor=None):
+                  lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None, checks=None):
     return ObserverServer(address, router_url, auth_file=auth_file, certfile=certfile, keyfile=keyfile,
-                          lab=lab, store=store, capture=capture, monitor=monitor)
+                          lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage, checks=checks)
 
 
 def main():
+    from observer.assistant import Assistant
     from observer.capture import Capture
-    from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, PodmanSplunkSource
+    from observer.checks import Checks
+    from observer.coverage import Coverage
+    from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, OperatorAccount, PodmanSplunkSource
     from observer.monitor import Monitor
     from observer.store import DEFAULT_DATA_DIR, Store
 
@@ -458,7 +766,13 @@ def main():
     # Saved previews stay viewable with --no-capture; only new captures stop.
     capture = Capture(lab, store, args.data_dir)
     monitor = Monitor(lab, store, capture)
-    options = dict(lab=lab, store=store, capture=capture, monitor=monitor)
+    operator_file = args.config_dir / "operator.json"
+    operator = OperatorAccount(operator_file) if operator_file.exists() else None
+    coverage = Coverage(store, lab, args.config_dir)
+    assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture, coverage)
+    checks = Checks(lab, store, coverage, args.config_dir, assistant.lab_state)
+    monitor.checks = checks
+    options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage, checks=checks)
     if args.lan_address:
         address = private_lan_address(args.lan_address)
         server = create_server(

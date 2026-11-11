@@ -4,6 +4,7 @@ import json
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -241,6 +242,52 @@ class HistoryTest(unittest.TestCase):
 
 
 class LayoutTest(unittest.TestCase):
+    def test_an_unchanged_fact_is_stored_once_with_its_last_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            for minute in range(5):
+                store.record("p-sh1", "web", "GET /login", {"http_status": 200}, {"web": "available"},
+                             observed_at=f"2026-11-01T10:0{minute}:00Z")
+            first = store.latest("p-sh1", "web")
+            self.assertEqual((first["since"], first["observed_at"]), ("2026-11-01T10:00:00Z", "2026-11-01T10:04:00Z"))
+            store.record("p-sh1", "web", "GET /login", {"http_status": 503}, {"web": "unavailable"}, observed_at="2026-11-01T10:05:00Z")
+            store.record("p-sh1", "web", "GET /login", {"http_status": 503}, {"web": "unavailable"}, observed_at="2026-11-01T10:06:00Z")
+            rows = store.db.execute("SELECT count(*) FROM observations WHERE component = 'p-sh1' AND kind = 'web'").fetchone()[0]
+            self.assertEqual(rows, 2)
+            change = [item for item in store.changes("p-sh1") if item["current"] == "unavailable"][0]
+            self.assertEqual(store.observation(change["observation_id"])["value"], {"http_status": 503})
+            # Looking back to 10:02, the first value held and had been confirmed by then.
+            past = store.latest_before("p-sh1", "web", datetime(2026, 11, 1, 10, 2, 30, tzinfo=timezone.utc).timestamp())
+            self.assertEqual((past["value"], past["observed_at"]), ({"http_status": 200}, "2026-11-01T10:02:30Z"))
+            # A fact still being confirmed is not pruned however long ago it was first seen.
+            store.prune(now=datetime(2026, 12, 1, 10, 5, 30, tzinfo=timezone.utc).timestamp())
+            self.assertEqual(store.latest("p-sh1", "web")["value"], {"http_status": 503})
+            store.db.close()
+
+    def test_a_store_written_before_repeats_were_merged_is_tidied_once(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            old = sqlite3.connect(Path(directory) / "observer.db")
+            old.executescript("""
+                CREATE TABLE observations (id INTEGER PRIMARY KEY, component TEXT NOT NULL, kind TEXT NOT NULL,
+                    observed_at TEXT NOT NULL, epoch REAL NOT NULL, source TEXT NOT NULL, value TEXT NOT NULL);
+                CREATE TABLE changes (id INTEGER PRIMARY KEY, component TEXT NOT NULL, signal TEXT NOT NULL,
+                    observed_at TEXT NOT NULL, epoch REAL NOT NULL, previous TEXT, current TEXT, source TEXT NOT NULL, observation_id INTEGER);
+            """)
+            values = ['{"a": 1}', '{"a": 1}', '{"a": 1}', '{"a": 2}', '{"a": 2}', '{"a": 1}']
+            for index, value in enumerate(values):
+                old.execute("INSERT INTO observations (component, kind, observed_at, epoch, source, value) VALUES ('c', 'k', ?, ?, 's', ?)",
+                            (f"2026-11-01T10:0{index}:00Z", 1000.0 + index, value))
+            old.execute("INSERT INTO changes (component, signal, observed_at, epoch, previous, current, source, observation_id)"
+                        " VALUES ('c', 'x', '2026-11-01T10:03:00Z', 1003, '1', '2', 's', 4)")
+            old.commit(); old.close()
+            store = Store(directory)
+            rows = [tuple(row) for row in store.db.execute("SELECT id, value, observed_at, seen_at FROM observations ORDER BY id")]
+            self.assertEqual(rows, [(1, '{"a": 1}', "2026-11-01T10:00:00Z", "2026-11-01T10:02:00Z"),
+                                    (4, '{"a": 2}', "2026-11-01T10:03:00Z", "2026-11-01T10:04:00Z"),
+                                    (6, '{"a": 1}', "2026-11-01T10:05:00Z", "2026-11-01T10:05:00Z")])
+            store.db.close()
+
     def test_saved_selection_is_restored_after_reopening(self):
         with tempfile.TemporaryDirectory() as directory:
             router = start_router()

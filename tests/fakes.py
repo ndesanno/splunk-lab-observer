@@ -78,7 +78,21 @@ class FakeSource:
         raise RuntimeError("unexpected command")
 
     def logs(self, component, tail=80):
-        return f"{component} log line\n"
+        return f"{component} log line\nadmin password = hunter2\n"
+
+    def splunk_search(self, component, query, earliest, latest, max_count, app=None):
+        self.searches = getattr(self, "searches", []) + [query]
+        answers = getattr(self, "answers", {})  # (component, text the query contains) -> rows, or an exception to raise
+        for (where, needle), rows in answers.items():
+            if where == component and needle in query:
+                if isinstance(rows, Exception):
+                    raise rows
+                return rows, f"splunkd {component} oneshot as lab_observer"
+        return [{"component": "TailReader", "count": "3", "_raw": "raw event text"}], f"splunkd {component} oneshot"
+
+    def container_action(self, component, action):
+        item = next(item for item in self.container_list if item["name"] == component)
+        item["state"] = "exited" if action == "stop" else "running"
 
     def stats(self):
         return {item["name"]: {"cpu_percent": "1.0%", "mem_usage": "100MB / 1GB", "mem_percent": "10%"}
@@ -90,6 +104,7 @@ class FakeSource:
 
 class FakeRouterHandler(BaseHTTPRequestHandler):
     """Splunk Web behind the observer router: every component under /lab/<name>/."""
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self):
         parts = self.path.split("/")
@@ -100,10 +115,29 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if self.path == f"/lab/{name}/":
             self.send_response(303)
             self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/lab/{name}/en-US/")
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         self.server.last_cookie = self.headers.get("Cookie", "")
+        self.server.connections.add(self.client_address)
+        if self.path.endswith("/stream"):  # a reply without a length, sent in pieces as Splunk streams results
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            for piece in (b"first ", b"second ", b"third"):
+                self.wfile.write(piece)
+                self.wfile.flush()
+            return
         body = f"<h1>Splunk Web of {name}</h1>".encode()
+        if "/app/search/rich" in self.path:  # a page with the things a reading must and must not include
+            body = (f"<title>Rich</title><h1>Visible heading of {name}</h1>"
+                    "<div style='display:none'>Hidden banner: network connection lost</div>"
+                    "<div aria-hidden='true'>Hidden menu</div><div style='visibility:hidden'>Invisible note</div>"
+                    "<p>Results <span>ready</span></p><button>Save As</button><a href='other'>Datasets</a>"
+                    "<div class='raw-event'>raw event text user=alice</div>"
+                    "<input type='password' value='secret'><script>var hiddenScriptText = 1;</script>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
@@ -125,6 +159,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 def start_router():
     router = ThreadingHTTPServer(("127.0.0.1", 0), FakeRouterHandler)
     router.last_cookie = ""
+    router.connections = set()
     threading.Thread(target=router.serve_forever, daemon=True).start()
     return router
 
