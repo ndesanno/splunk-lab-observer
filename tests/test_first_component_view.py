@@ -1,130 +1,109 @@
-"""HTTP acceptance checks for the first direct component view."""
+"""HTTP acceptance checks for direct views of every discovered Splunk Web component."""
 
 import json
-import threading
+import tempfile
 import unittest
 from http.client import HTTPConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from observer.lab import Lab
 from observer.server import create_server
+from observer.store import Store
+from tests.fakes import FakeSource, start, start_router
 
 
-class FakeSplunkHandler(BaseHTTPRequestHandler):
-    server_version = "Splunkd"
-
-    def do_GET(self):
-        if self.path == "/":
-            self.send_response(303)
-            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/en-US/")
-            self.end_headers()
-            return
-        if self.path == "/en-US/":
-            body = b"<h1>Real lab component screen</h1>"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("X-Frame-Options", "SAMEORIGIN")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self.send_error(404)
-
-    def do_POST(self):
-        self.send_response(200)
-        self.end_headers()
-
-    def log_message(self, *_args):
-        pass
-
-
-def start(server):
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return thread
-
-
-def get(port, path):
+def call(port, method, path, body=None, headers=None):
     connection = HTTPConnection("127.0.0.1", port, timeout=3)
-    connection.request("GET", path)
+    connection.request(method, path, body=body, headers=headers or {})
     response = connection.getresponse()
-    status, headers, body = response.status, dict(response.getheaders()), response.read()
+    result = response.status, response.getheaders(), response.read()
     connection.close()
-    return status, headers, body
+    return result
 
 
-class FirstComponentViewTest(unittest.TestCase):
+def header(headers, name):
+    return [value for key, value in headers if key.lower() == name.lower()]
+
+
+class ComponentViewTest(unittest.TestCase):
     def setUp(self):
-        self.splunk = ThreadingHTTPServer(("127.0.0.1", 0), FakeSplunkHandler)
-        start(self.splunk)
-        self.observer = create_server(("127.0.0.1", 0), f"http://127.0.0.1:{self.splunk.server_port}")
-        start(self.observer)
+        self.temp = tempfile.TemporaryDirectory()
+        self.router = start_router()
+        self.store = Store(self.temp.name)
+        self.lab = Lab(FakeSource(), self.store)
+        self.lab.discover()
+        self.observer = start(create_server(("127.0.0.1", 0), f"http://127.0.0.1:{self.router.server_port}",
+                                            lab=self.lab, store=self.store))
+        self.port = self.observer.server_port
 
     def tearDown(self):
         self.observer.shutdown()
         self.observer.server_close()
-        self.splunk.shutdown()
-        self.splunk.server_close()
+        self.router.shutdown()
+        self.router.server_close()
+        self.store.db.close()
+        self.temp.cleanup()
 
-    def test_owner_can_open_a_direct_component_view(self):
-        status, _headers, page = get(self.observer.server_port, "/observer/")
+    def test_owner_can_open_every_discovered_web_component(self):
+        status, _headers, page = call(self.port, "GET", "/observer/")
         self.assertEqual(status, 200)
-        self.assertIn(b'<iframe id="component-view" src="/en-US/"', page)
+        self.assertIn(b"Splunk Lab Observer", page)
 
-        status, _headers, body = get(self.observer.server_port, "/observer/api/component")
+        status, _headers, body = call(self.port, "GET", "/observer/api/lab")
         self.assertEqual(status, 200)
-        observation = json.loads(body)
-        self.assertEqual(observation["availability"], "available")
-        self.assertEqual(observation["discovery_state"], "detected")
-        self.assertEqual(observation["name"], f"Splunk web :{self.splunk.server_port}")
-        self.assertEqual(observation["source"], f"http://127.0.0.1:{self.splunk.server_port}/")
-        self.assertIn("checked_at", observation)
+        lab = json.loads(body)
+        web = sorted(item["id"] for item in lab["components"] if item["web_path"])
+        self.assertEqual(web, ["p-cm", "p-idx1", "p-sh1", "p-sh2"])
+        self.assertIsNone(next(item for item in lab["components"] if item["id"] == "p-uf")["web_path"])
 
-        status, headers, body = get(self.observer.server_port, "/en-US/")
-        self.assertEqual(status, 200)
-        self.assertIn(b"Real lab component screen", body)
-        self.assertEqual(headers["X-Frame-Options"], "SAMEORIGIN")
+        for name in web:
+            status, headers, body = call(self.port, "GET", f"/lab/{name}/en-US/")
+            self.assertEqual(status, 200)
+            self.assertIn(f"Splunk Web of {name}".encode(), body)
+            self.assertEqual(header(headers, "X-Frame-Options"), ["SAMEORIGIN"])
 
-        status, headers, _body = get(self.observer.server_port, "/")
+        status, headers, _body = call(self.port, "GET", "/lab/p-sh1/")
         self.assertEqual(status, 303)
-        self.assertEqual(headers["Location"], f"http://127.0.0.1:{self.observer.server_port}/en-US/")
+        self.assertEqual(header(headers, "Location"), [f"http://127.0.0.1:{self.port}/lab/p-sh1/en-US/"])
+
+    def test_each_component_keeps_its_own_session_cookies(self):
+        _status, headers, _body = call(self.port, "GET", "/lab/p-sh1/en-US/")
+        cookies = header(headers, "Set-Cookie")
+        self.assertIn("session_id_8000=abc; HttpOnly; Path=/lab/p-sh1/", cookies)
+        self.assertIn("cval=1; Path=/lab/p-sh1/en-US/account/", cookies)
+        _status, headers, _body = call(self.port, "GET", "/lab/p-sh2/en-US/")
+        self.assertIn("session_id_8000=abc; HttpOnly; Path=/lab/p-sh2/", header(headers, "Set-Cookie"))
+
+    def test_unknown_and_unrouted_paths_are_refused(self):
+        self.assertEqual(call(self.port, "GET", "/lab/p-uf/en-US/")[0], 404)
+        self.assertEqual(call(self.port, "GET", "/lab/not-in-the-lab/en-US/")[0], 404)
+        self.assertEqual(call(self.port, "GET", "/en-US/")[0], 404)
+        self.assertEqual(call(self.port, "GET", "/lab/../observer/")[0], 404)
 
     def test_unavailable_component_is_explicit(self):
-        self.splunk.shutdown()
-        self.splunk.server_close()
-
-        status, _headers, body = get(self.observer.server_port, "/observer/api/component")
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["availability"], "unavailable")
-
-        status, _headers, body = get(self.observer.server_port, "/en-US/")
+        self.router.shutdown()
+        self.router.server_close()
+        status, _headers, body = call(self.port, "GET", "/lab/p-sh1/en-US/")
         self.assertEqual(status, 502)
         self.assertIn(b"Component unavailable", body)
 
     def test_another_website_cannot_post_through_the_local_view(self):
-        connection = HTTPConnection("127.0.0.1", self.observer.server_port, timeout=3)
-        connection.request("POST", "/en-US/account/login", body=b"test=1", headers={"Origin": "http://another-website.test"})
-        response = connection.getresponse()
-        self.assertEqual(response.status, 403)
-        response.read()
-        connection.close()
-
-        connection = HTTPConnection("127.0.0.1", self.observer.server_port, timeout=3)
-        connection.request("POST", "/en-US/account/login", body=b"test=1", headers={"Origin": f"http://127.0.0.1:{self.observer.server_port}"})
-        response = connection.getresponse()
-        self.assertEqual(response.status, 200)
-        response.read()
-        connection.close()
-
-        connection = HTTPConnection("127.0.0.1", self.observer.server_port, timeout=3)
-        connection.request("GET", "/en-US/", headers={"Host": "another-website.test"})
-        response = connection.getresponse()
-        self.assertEqual(response.status, 403)
-        response.read()
-        connection.close()
+        status, _headers, _body = call(self.port, "POST", "/lab/p-sh1/en-US/account/login", b"test=1",
+                                       {"Origin": "http://another-website.test"})
+        self.assertEqual(status, 403)
+        status, _headers, _body = call(self.port, "POST", "/lab/p-sh1/en-US/account/login", b"test=1",
+                                       {"Origin": f"http://127.0.0.1:{self.port}"})
+        self.assertEqual(status, 200)
+        status, _headers, _body = call(self.port, "GET", "/lab/p-sh1/en-US/", headers={"Host": "another-website.test"})
+        self.assertEqual(status, 403)
+        status, _headers, _body = call(self.port, "POST", "/observer/api/layout", json.dumps({"layout": {"tiles": []}}),
+                                       {"Content-Type": "application/json", "Origin": "http://another-website.test"})
+        self.assertEqual(status, 403)
 
     def test_proxy_cannot_bind_beyond_loopback(self):
         with self.assertRaises(ValueError):
-            create_server(("0.0.0.0", 0), f"http://127.0.0.1:{self.splunk.server_port}")
+            create_server(("0.0.0.0", 0), f"http://127.0.0.1:{self.router.server_port}")
+        with self.assertRaises(ValueError):
+            create_server(("127.0.0.1", 0), "http://192.168.3.86:8190")
 
 
 if __name__ == "__main__":

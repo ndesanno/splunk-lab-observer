@@ -5,106 +5,634 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Splunk Lab Observer</title>
   <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7; }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7;
+      --line: #344154; --muted: #a8b5c7; --panel: #111c2e; --button: #1f3652; --button-line: #55718e;
+      --ok-bg: #173f31; --ok: #a6f3c6; --warn-bg: #534516; --warn: #ffe79a; --bad-bg: #572a2a; --bad: #ffc0c0; --link: #8fc2ff; }
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
-    header { display: flex; gap: 1rem; align-items: center; justify-content: space-between; padding: .9rem 1.2rem; border-bottom: 1px solid #344154; }
+    header { display: flex; gap: 1rem; align-items: center; justify-content: space-between; padding: .7rem 1.1rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
     h1 { margin: 0; font-size: 1.05rem; }
-    .subtitle { color: #a8b5c7; font-size: .85rem; margin-top: .2rem; }
-    .actions { display: flex; align-items: center; gap: .7rem; }
-    button, a.button { background: #1f3652; color: #f5f8fc; border: 1px solid #55718e; border-radius: .35rem; padding: .45rem .7rem; font: inherit; text-decoration: none; cursor: pointer; }
-    button:hover, a.button:hover { background: #2b4b70; }
-    #availability { border-radius: 1rem; padding: .3rem .65rem; background: #534516; color: #ffe79a; font-size: .85rem; }
-    #availability.available { background: #173f31; color: #a6f3c6; }
-    #availability.unavailable { background: #572a2a; color: #ffc0c0; }
-    main { padding: 1rem; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: .6rem; }
-    .facts { color: #a8b5c7; font-size: .85rem; display: flex; flex-wrap: wrap; gap: 1.2rem; }
-    .frame { position: relative; flex: 1; min-height: 16rem; border: 1px solid #344154; border-radius: .5rem; overflow: hidden; background: #f8f9fb; }
-    .frame.actual { overflow: auto; }
-    iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; background: white; transform-origin: 0 0; }
-    select { background: #1f3652; color: #f5f8fc; border: 1px solid #55718e; border-radius: .35rem; padding: .4rem .5rem; font: inherit; }
-    #unavailable { display: none; position: absolute; inset: 0; place-items: center; background: #101b2c; color: #ffc0c0; font-size: 1.1rem; }
-    .frame.down #unavailable { display: grid; }
-    @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column; } .actions { flex-wrap: wrap; } }
+    h2 { font-size: 1rem; margin: 1.2rem 0 .5rem; }
+    .subtitle, .muted { color: var(--muted); font-size: .85rem; }
+    .row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+    button, select, input, textarea { font: inherit; }
+    button, select { background: var(--button); color: #f5f8fc; border: 1px solid var(--button-line); border-radius: .35rem; padding: .35rem .6rem; cursor: pointer; }
+    button:hover { background: #2b4b70; }
+    button.small { padding: .1rem .4rem; font-size: .8rem; }
+    button[aria-pressed="true"] { background: #2f5d8f; border-color: #8fb8e6; }
+    a { color: var(--link); }
+    nav { display: flex; gap: .3rem; padding: .5rem 1.1rem 0; border-bottom: 1px solid var(--line); }
+    nav button { border-radius: .35rem .35rem 0 0; border-bottom: 0; background: transparent; }
+    nav button[aria-selected="true"] { background: var(--panel); border-color: var(--line); }
+    main { flex: 1; min-height: 0; overflow: auto; padding: .8rem 1.1rem 1.5rem; position: relative; }
+    .badge { display: inline-block; border-radius: 1rem; padding: .05rem .5rem; font-size: .78rem; background: #26344a; color: #d5deea; white-space: nowrap; }
+    .badge.ok { background: var(--ok-bg); color: var(--ok); }
+    .badge.warn { background: var(--warn-bg); color: var(--warn); }
+    .badge.bad { background: var(--bad-bg); color: var(--bad); }
+    .badge.owner { background: #3b2d5c; color: #e1d2ff; }
+    /* wall */
+    .toolbar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-bottom: .7rem; }
+    .picker { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); padding: .6rem .8rem; margin-bottom: .8rem; columns: 17rem; column-gap: 1.5rem; }
+    .picker section { break-inside: avoid; margin-bottom: .6rem; }
+    .picker h3 { margin: 0 0 .3rem; font-size: .85rem; color: var(--muted); font-weight: 600; }
+    .picker label { display: flex; gap: .4rem; align-items: center; font-size: .88rem; padding: .1rem 0; }
+    .wall[hidden], [hidden] { display: none !important; }
+    .wall { display: grid; gap: .8rem; grid-template-columns: repeat(var(--columns, 3), minmax(0, 1fr)); }
+    .tile { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
+    .tile.dragging { opacity: .4; }
+    .tile.drop-target { outline: 2px dashed #8fb8e6; }
+    .tile-head { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .4rem; padding: .35rem .5rem; border-bottom: 1px solid var(--line); cursor: grab; min-width: 0; }
+    .tile-head .name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 0 100%; min-width: 0; }
+    .tile-head .spacer { flex: 1; }
+    .tile-body { position: relative; aspect-ratio: 16 / 10; overflow: hidden; background: #f8f9fb; border-radius: 0 0 .5rem .5rem; }
+    .tile-body iframe { position: absolute; top: 0; left: 0; border: 0; background: white; transform-origin: 0 0; }
+    .tile-body img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+    .tile-foot { font-size: .75rem; color: var(--muted); padding: .3rem .5rem; border-top: 1px solid var(--line); }
+    .empty { position: absolute; inset: 0; display: grid; place-items: center; background: #101b2c; color: var(--muted); text-align: center; padding: 1rem; font-size: .9rem; }
+    .console { position: absolute; inset: 0; background: #070c16; color: #cfe3ff; font: .72rem/1.35 ui-monospace, monospace; padding: .5rem; overflow: auto; white-space: pre-wrap; }
+    .focus { position: fixed; inset: 0; z-index: 20; background: rgba(5, 9, 18, .92); display: flex; flex-direction: column; padding: 1rem; gap: .5rem; }
+    .focus .tile-body { flex: 1; aspect-ratio: auto; border: 1px solid var(--line); border-radius: .5rem; }
+    .focus-main { flex: 1; min-height: 0; display: flex; gap: .6rem; }
+    .screens { width: 17rem; flex: none; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; padding: .5rem; }
+    .screens input { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .35rem; margin-bottom: .4rem; }
+    .screens h4 { margin: .6rem 0 .2rem; font-size: .78rem; color: var(--muted); font-weight: 600; }
+    .screens button.screen { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-radius: .3rem; padding: .2rem .4rem; font-size: .85rem; }
+    .screens button.screen:hover { background: #1b2c45; }
+    .screens button.screen[aria-current="true"] { background: #2f5d8f; }
+    .timebar input[type=range] { flex: 1; min-width: 12rem; }
+    .timebar input[type=datetime-local] { background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .25rem; }
+    .history-note { border: 1px solid #3d5f8a; background: #10213a; border-radius: .4rem; padding: .5rem .7rem; font-size: .85rem; margin-bottom: .7rem; }
+    .history-note details { margin-top: .4rem; }
+    /* overview */
+    .groups { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); }
+    .card { border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); padding: .7rem .8rem; }
+    .card h3 { margin: 0 0 .3rem; font-size: .95rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .4rem; }
+    .chip { border: 1px solid var(--line); border-radius: .35rem; padding: .15rem .45rem; font-size: .8rem; background: #0d1626; cursor: pointer; color: inherit; }
+    table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+    th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #243246; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: #0b1220; }
+    tr.clickable:hover { background: #142238; cursor: pointer; }
+    .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(40rem, 100%); background: #0e1828; border-left: 1px solid var(--line); z-index: 30; overflow: auto; padding: 1rem 1.1rem 2rem; box-shadow: -1rem 0 2rem rgba(0,0,0,.4); }
+    .drawer pre { background: #070c16; padding: .6rem; border-radius: .35rem; overflow: auto; font-size: .75rem; max-height: 22rem; }
+    .drawer input, .drawer textarea { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .4rem; }
+    .fact-source { color: var(--muted); font-size: .75rem; }
+    .notice { border: 1px solid #6d5a1d; background: #2b2410; color: var(--warn); border-radius: .4rem; padding: .5rem .7rem; font-size: .85rem; margin-bottom: .7rem; }
+    @media (max-width: 900px) { .wall { grid-template-columns: minmax(0, 1fr) !important; } }
   </style>
 </head>
 <body>
   <header>
-    <div><h1>Splunk Lab Observer</h1><div class="subtitle" id="component-name">Checking component…</div></div>
-    <div class="actions"><span id="availability" role="status" aria-live="polite">Checking…</span><label><span hidden>View size</span><select id="fit" aria-label="View size"><option value="fit">Whole screen, shrunk to fit</option><option value="actual">Actual size</option></select></label><button id="reload" type="button">Reload view</button><a class="button" href="/en-US/" target="_blank" rel="noopener">Open full screen</a><form id="logout" method="post" action="/observer/logout" hidden><button type="submit">Sign out</button></form></div>
+    <div><h1>Splunk Lab Observer</h1><div class="subtitle" id="summary">Loading the lab…</div></div>
+    <div class="row">
+      <button id="discover" type="button" title="Discover components and relationships now">Discover now</button>
+      <button id="capture" type="button" title="Take new screen previews of every Splunk Web">Capture previews</button>
+      <form id="logout" method="post" action="/observer/logout" hidden><button type="submit">Sign out</button></form>
+    </div>
   </header>
-  <main>
-    <div class="facts"><span id="source">Source: checking</span><span id="view-time">View URL checked: waiting</span><span id="loaded-time">Document loaded: waiting</span><span id="checked">Health checked: checking</span><span id="scale"></span></div>
-    <div class="frame" id="frame"><iframe id="component-view" src="/en-US/" title="Live Splunk component screen"></iframe><div id="unavailable">Component unavailable. Check that it is running, then reload.</div></div>
-  </main>
+  <nav role="tablist">
+    <button role="tab" data-tab="wall" aria-selected="true">Wall</button>
+    <button role="tab" data-tab="overview" aria-selected="false">Overview</button>
+    <button role="tab" data-tab="changes" aria-selected="false">Changes</button>
+  </nav>
+  <main id="main"></main>
   <script>
-    const status = document.getElementById('availability');
-    const frame = document.getElementById('frame');
-    const view = document.getElementById('component-view');
-    let componentSource = null;
-    function currentViewSource(componentSource) {
-      try {
-        const location = new URL(view.contentWindow.location.href);
-        if (location.origin !== window.location.origin) return null;
-        return new URL(location.pathname + location.search + location.hash, componentSource).href;
-      } catch (_error) { return null; }
+  'use strict';
+  const DESKTOP = {width: 1440, height: 900};
+  const MAX_LIVE = 4;
+  let lab = null;
+  let tab = 'wall';
+  let layout = {tiles: [], columns: 3};
+  let savedLayout = null;
+  let pickerOpen = false;
+  let focused = null;
+  let drawer = null;
+  let history = null;  // {time, data}: the wall replays recorded state at one moment
+
+  function h(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (value === false || value === null || value === undefined) continue;
+      if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+      else if (key === 'class') node.className = value;
+      else if (key === 'style') node.setAttribute('style', value);
+      else node.setAttribute(key, value === true ? '' : value);
     }
-    async function refresh() {
-      try {
-        const response = await fetch('/observer/api/component', {cache: 'no-store'});
-        if (response.status === 401) { window.location.assign('/observer/login'); return; }
-        const component = await response.json();
-        const available = component.availability === 'available';
-        status.textContent = available ? 'Available' : 'Unavailable';
-        status.className = component.availability;
-        frame.classList.toggle('down', !available);
-        document.getElementById('component-name').textContent = component.name;
-        document.getElementById('logout').hidden = !component.login_required;
-        componentSource = component.source;
-        updateViewSource();
-        document.getElementById('checked').textContent = 'Health checked: ' + new Date(component.checked_at).toLocaleString();
-      } catch (_error) {
-        status.textContent = 'Observer unavailable';
-        status.className = 'unavailable';
-        frame.classList.add('down');
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+  function when(iso) {
+    if (!iso) return 'never';
+    const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+    if (seconds < 60) return `${Math.max(seconds, 0)}s ago`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+    if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
+    return new Date(iso).toLocaleString();
+  }
+  function stamp(iso) { return h('time', {datetime: iso, title: iso ? new Date(iso).toLocaleString() : ''}, when(iso)); }
+  async function api(path, options) {
+    const response = await fetch(path, Object.assign({cache: 'no-store'}, options));
+    if (response.status === 401) { window.location.assign('/observer/login'); throw new Error('login required'); }
+    if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+    return response.json();
+  }
+  function post(path, body) {
+    return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  }
+  const byId = id => lab && lab.components.find(item => item.id === id);
+  const displayName = component => component.owner_name || component.id;
+  const isWeb = component => Boolean(component.web_path);
+
+  function stateBadge(component) {
+    const status = component.status || {};
+    const container = status.container && status.container.value;
+    if (component.historical && !container) return h('span', {class: 'badge', title: 'Nothing recorded at or before this time'}, 'no record');
+    const state = container ? container.state : (component.facts.container_state || {}).value;
+    if (state !== 'running') return h('span', {class: 'badge bad', title: 'Container state from podman ps'}, state || 'unknown');
+    const health = status.splunk_health && status.splunk_health.value.health;
+    if (health) {
+      const tone = {green: 'ok', yellow: 'warn', red: 'bad'}[health] || '';
+      return h('span', {class: `badge ${tone}`, title: `Splunk health ${health}, ${status.splunk_health.source}`}, `health ${health}`);
+    }
+    const docker = container && container.health;
+    return h('span', {class: `badge ${docker === 'unhealthy' ? 'bad' : 'ok'}`, title: 'Container state from podman ps'}, docker ? `running, ${docker}` : 'running');
+  }
+  function kindLabel(kind) {
+    return {splunk_enterprise: 'Splunk Enterprise', universal_forwarder: 'Universal forwarder', load_balancer: 'Load balancer',
+      data_generator: 'Data generator', observer_router: 'Observer router', container: 'Container'}[kind] || kind;
+  }
+  function rolesOf(component) {
+    const roles = (component.facts.server_roles || {}).value || [];
+    // Old aliases (cluster_master, cluster_slave, license_master) repeat the current names; every
+    // lab instance carries kv_store and license_manager, so they say nothing about its role.
+    const interesting = roles.filter(role => !['kv_store', 'license_collector', 'license_master', 'license_manager',
+      'cluster_master', 'cluster_slave', 'search_peer'].includes(role));
+    return interesting.length ? interesting.join(', ') : '';
+  }
+
+  // --- data -------------------------------------------------------------------------
+  async function refresh() {
+    try {
+      lab = await api('/observer/api/lab');
+      document.getElementById('logout').hidden = !lab.login_required;
+      if (!layout.tiles.length && !savedLayout) defaultLayout();
+      document.getElementById('summary').textContent =
+        `${lab.components.length} components, ${lab.components.filter(isWeb).length} with Splunk Web · discovery ${when(lab.checked_at)}` +
+        (lab.monitor && lab.monitor.health_at ? ` · health ${when(lab.monitor.health_at)}` : '') +
+        (lab.capture && lab.capture.running ? ' · capturing previews…' : '');
+      render();
+    } catch (error) {
+      document.getElementById('summary').textContent = `Observer unavailable: ${error.message}`;
+    }
+  }
+  // Every Splunk Web, as previews (cheap images) with the first one live, grouped by cluster.
+  function allWebTiles() {
+    const ordered = groupsForPicker().flatMap(([, members]) => members).filter(id => isWeb(byId(id)));
+    return [...new Set(ordered)].map((id, index) => ({id, live: index === 0}));
+  }
+  function defaultLayout() {
+    layout = {tiles: allWebTiles(), columns: 4};
+  }
+  async function loadLayout() {
+    try {
+      const result = await api('/observer/api/layout');
+      if (result.layout && Array.isArray(result.layout.tiles)) {
+        savedLayout = result.layout;
+        layout = {tiles: result.layout.tiles.map(tile => ({id: tile.id, live: Boolean(tile.live)})), columns: result.layout.columns || 3};
+      }
+    } catch (_error) { /* first run: no saved layout */ }
+  }
+  const layoutDirty = () => !savedLayout || JSON.stringify({tiles: layout.tiles, columns: layout.columns}) !==
+    JSON.stringify({tiles: savedLayout.tiles.map(tile => ({id: tile.id, live: Boolean(tile.live)})), columns: savedLayout.columns || 3});
+
+  // --- rendering ----------------------------------------------------------------------
+  // The wall stays in the page while other tabs show, and its tiles are never moved in the
+  // document: moving an iframe reloads it, so order comes from CSS and only headers,
+  // previews, and footers are rebuilt on refresh.
+  const panes = {wall: h('div', {}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
+  const wallTop = h('div', {});
+  const grid = h('div', {class: 'wall'});
+  const tileNodes = new Map();  // component id -> {node, live}
+  panes.wall.append(wallTop, grid);
+  document.getElementById('main').append(panes.wall, panes.overview, panes.changes);
+
+  function render() {
+    for (const button of document.querySelectorAll('nav button')) button.setAttribute('aria-selected', String(button.dataset.tab === tab));
+    for (const [name, pane] of Object.entries(panes)) pane.hidden = name !== tab;
+    renderWall();
+    if (tab === 'overview') panes.overview.replaceChildren(renderOverview());
+    if (tab === 'changes') panes.changes.replaceChildren(renderChanges());
+    renderFocus();
+    renderDrawer();
+    requestAnimationFrame(layoutFrames);
+  }
+
+  function renderWall() {
+    const live = layout.tiles.filter(tile => tile.live).length;
+    const wrapper = h('div', {});
+    wrapper.append(h('div', {class: 'toolbar'},
+      h('button', {type: 'button', 'aria-pressed': String(pickerOpen), onclick: () => { pickerOpen = !pickerOpen; render(); }}, `Choose views (${layout.tiles.length})`),
+      h('label', {class: 'row muted'}, 'Columns',
+        h('select', {onchange: event => { layout.columns = Number(event.target.value); render(); }},
+          [1, 2, 3, 4].map(n => h('option', {value: n, selected: layout.columns === n}, n)))),
+      h('button', {type: 'button', title: 'Show every Splunk Web as a preview', onclick: () => {
+        const live = new Set(layout.tiles.filter(tile => tile.live).map(tile => tile.id));
+        const tiles = allWebTiles().map(tile => ({id: tile.id, live: live.has(tile.id)}));
+        const extra = layout.tiles.filter(tile => !tiles.some(item => item.id === tile.id));
+        layout.tiles = tiles.concat(extra); render(); }}, `Show all Splunk screens (${lab.components.filter(isWeb).length})`),
+      h('button', {type: 'button', onclick: saveLayout}, layoutDirty() ? 'Save layout' : 'Layout saved'),
+      savedLayout ? h('button', {type: 'button', onclick: async () => { await loadLayout(); render(); }, disabled: !layoutDirty()}, 'Restore saved') : null,
+      h('span', {class: 'muted'}, savedLayout ? ['Saved ', stamp(savedLayout.saved_at)] : 'Not saved yet'),
+    ));
+    wrapper.append(renderTimebar());
+    if (history) {
+      const changes = history.data.changes;
+      wrapper.append(h('div', {class: 'history-note'},
+        h('strong', {}, `Showing the lab as recorded at ${new Date(history.time).toLocaleString()}. `),
+        'Live views are paused; each tile shows its newest preview at or before that moment and how far before it was taken. ',
+        `A preview more than ${Math.round(history.data.missing_capture_after_seconds / 60)} minutes old, or whose file has expired, is marked missing.`,
+        h('details', {}, h('summary', {}, `${changes.length} change(s) within 30 minutes of this time`), changesTable(changes, true))));
+    }
+    if (live > MAX_LIVE && !history) wrapper.append(h('div', {class: 'notice'}, `${live} live views are open. Each is a full Splunk page in your browser; more than ${MAX_LIVE} may slow it down. Switch some to previews.`));
+    if (pickerOpen) wrapper.append(renderPicker());
+    if (!layout.tiles.length) wrapper.append(h('p', {class: 'muted'}, 'No views selected. Use “Choose views” to add components.'));
+    wallTop.replaceChildren(wrapper);
+    grid.style.setProperty('--columns', layout.columns);
+    const wanted = new Set();
+    layout.tiles.forEach((tile, index) => {
+      const component = byId(tile.id);
+      if (!component) return;
+      wanted.add(tile.id);
+      const view = history ? historical(component) : component;
+      const live = !history && tile.live && focused !== tile.id && isWeb(component);
+      let entry = tileNodes.get(tile.id);
+      if (entry && entry.live !== live) { entry.node.remove(); entry = null; }
+      if (!entry) {
+        entry = {node: h('article', {class: 'tile', draggable: 'true', 'data-id': tile.id}), live, body: null};
+        wireDrag(entry.node);
+        tileNodes.set(tile.id, entry);
+        grid.append(entry.node);
+      }
+      entry.node.style.order = index;
+      updateTile(entry, view, tile, index);
+    });
+    for (const [id, entry] of tileNodes) if (!wanted.has(id)) { entry.node.remove(); tileNodes.delete(id); }
+  }
+
+  function historical(component) {
+    return Object.assign({}, component, {historical: true, status: history.data.components[component.id] || {}});
+  }
+  function localInput(date) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  async function setHistory(date) {
+    if (!date) { history = null; render(); return; }
+    const now = Date.now();
+    const clamped = new Date(Math.min(date.getTime(), now));
+    const data = await api(`/observer/api/at?time=${encodeURIComponent(clamped.toISOString())}`);
+    history = {time: data.time, data};
+    focused = null;
+    render();
+  }
+  function renderTimebar() {
+    const start = lab.history_from ? Date.parse(lab.history_from) : Date.now() - 3600000;
+    const end = Date.now();
+    const current = history ? Date.parse(history.time) : end;
+    const step = minutes => setHistory(new Date(current + minutes * 60000));
+    return h('div', {class: 'toolbar timebar'},
+      h('span', {class: 'muted'}, 'Time'),
+      h('button', {type: 'button', 'aria-pressed': String(!history), onclick: () => setHistory(null)}, 'Now (live)'),
+      h('button', {type: 'button', title: '10 minutes earlier', onclick: () => step(-10)}, '−10 min'),
+      h('input', {type: 'range', min: start, max: end, step: 60000, value: current, 'aria-label': 'Time to show',
+        onchange: event => setHistory(new Date(Number(event.target.value)))}),
+      h('button', {type: 'button', title: '10 minutes later', disabled: !history, onclick: () => step(10)}, '+10 min'),
+      h('input', {type: 'datetime-local', value: localInput(new Date(current)), 'aria-label': 'Time to show',
+        onchange: event => event.target.value && setHistory(new Date(event.target.value))}),
+      h('span', {class: 'muted'}, `Recorded since ${new Date(start).toLocaleString()}`));
+  }
+
+  function groupsForPicker() {
+    const sections = [];
+    const seen = new Set();
+    for (const group of lab.groups) {
+      const members = group.members.filter(byId);
+      members.forEach(id => seen.add(id));
+      const title = group.type === 'indexer_cluster' ? `Indexer cluster ${group.label || ''} (manager ${group.manager})` : `Search head cluster ${group.label || ''}`;
+      sections.push([title, members]);
+    }
+    const rest = lab.components.filter(item => !seen.has(item.id));
+    for (const kind of ['splunk_enterprise', 'universal_forwarder', 'load_balancer', 'data_generator', 'observer_router', 'container']) {
+      const members = rest.filter(item => item.kind === kind).map(item => item.id);
+      if (members.length) sections.push([kindLabel(kind) + (kind === 'splunk_enterprise' ? ' (other)' : ''), members]);
+    }
+    return sections;
+  }
+  function renderPicker() {
+    return h('div', {class: 'picker'}, groupsForPicker().map(([title, members]) => h('section', {},
+      h('h3', {}, title),
+      members.map(id => {
+        const component = byId(id);
+        const tile = layout.tiles.find(item => item.id === id);
+        return h('label', {},
+          h('input', {type: 'checkbox', checked: Boolean(tile), onchange: event => {
+            if (event.target.checked) layout.tiles.push({id, live: false}); else layout.tiles = layout.tiles.filter(item => item.id !== id);
+            render(); }}),
+          displayName(component), ' ', stateBadge(component), isWeb(component) ? '' : h('span', {class: 'muted'}, ' console'));
+      }))));
+  }
+
+  function wireDrag(node) {
+    const indexOf = () => layout.tiles.findIndex(tile => tile.id === node.dataset.id);
+    node.addEventListener('dragstart', event => { event.dataTransfer.setData('text/plain', node.dataset.id); node.classList.add('dragging'); });
+    node.addEventListener('dragend', () => node.classList.remove('dragging'));
+    node.addEventListener('dragover', event => { event.preventDefault(); node.classList.add('drop-target'); });
+    node.addEventListener('dragleave', () => node.classList.remove('drop-target'));
+    node.addEventListener('drop', event => {
+      event.preventDefault(); node.classList.remove('drop-target');
+      move(layout.tiles.findIndex(tile => tile.id === event.dataTransfer.getData('text/plain')), indexOf());
+    });
+  }
+
+  function updateTile(entry, component, tile, index) {
+    const head = h('div', {class: 'tile-head'},
+      h('span', {class: 'name', title: component.id}, displayName(component)), stateBadge(component), h('span', {class: 'spacer'}),
+      isWeb(component) ? h('button', {class: 'small', type: 'button', 'aria-pressed': String(tile.live), disabled: Boolean(history),
+        title: history ? 'Return to Now to use live views' : 'Live view or timestamped preview',
+        onclick: () => { tile.live = !tile.live; render(); }}, tile.live ? 'Live' : 'Preview') : null,
+      h('button', {class: 'small', type: 'button', title: isWeb(component) ? 'Focus this view and its screen list' : 'Focus this view', onclick: () => { focused = component.id; render(); }}, '⤢'),
+      h('button', {class: 'small', type: 'button', title: 'Details and history', onclick: () => openDrawer(component.id)}, 'ⓘ'),
+      h('button', {class: 'small', type: 'button', title: 'Move earlier', disabled: index === 0, onclick: () => move(index, index - 1)}, '◀'),
+      h('button', {class: 'small', type: 'button', title: 'Move later', disabled: index === layout.tiles.length - 1, onclick: () => move(index, index + 1)}, '▶'),
+      h('button', {class: 'small', type: 'button', title: 'Remove from wall', onclick: () => { layout.tiles.splice(index, 1); render(); }}, '✕'));
+    const [body, foot] = entry.live && entry.body ? [entry.body, liveFoot(component)] : tileContent(component, entry.live);
+    entry.body = body;
+    if (entry.node.firstChild) {
+      entry.node.replaceChild(head, entry.node.children[0]);
+      if (entry.node.children[1] !== body) entry.node.replaceChild(body, entry.node.children[1]);
+      entry.node.replaceChild(foot, entry.node.children[2]);
+    } else {
+      entry.node.append(head, body, foot);
+    }
+  }
+  const liveFoot = component => h('div', {class: 'tile-foot'}, `Live · ${component.web_path} · sign in with your own lab account`);
+
+  function tileContent(component, live) {
+    const body = h('div', {class: 'tile-body'});
+    let foot;
+    if (component.historical) {
+      const status = component.status;
+      const container = status.container;
+      if (!isWeb(component)) {
+        body.append(h('div', {class: 'empty'}, 'Console output is not recorded. ',
+          container ? `Container ${container.value.state}${container.value.health ? `, ${container.value.health}` : ''}, as recorded ${new Date(container.observed_at).toLocaleString()}.` : 'No container state recorded by then.'));
+        return [body, h('div', {class: 'tile-foot'}, container ? container.source : 'No record')];
+      }
+      const gap = status.capture_at_time || {};
+      const missing = gap.missing ? h('span', {class: 'badge bad'}, 'missing capture') : null;
+      if (status.preview && gap.file_available) {
+        body.append(h('img', {src: `/observer/captures/${status.preview.value.file}`, alt: `Preview of ${displayName(component)}`, loading: 'lazy'}));
+        foot = h('div', {class: 'tile-foot'}, `Captured ${new Date(status.preview.observed_at).toLocaleTimeString()}, ${Math.round(gap.gap_seconds / 60)} min before the selected time `, missing);
+      } else {
+        body.append(h('div', {class: 'empty'}, status.preview ? 'The preview from that time has expired (previews are kept for 48 hours).' : 'No preview was captured at or before this time.'));
+        foot = h('div', {class: 'tile-foot'}, missing || 'No capture');
+      }
+      return [body, foot];
+    }
+    if (!isWeb(component)) {
+      const consoleNode = h('div', {class: 'console'}, 'Loading console…');
+      body.append(consoleNode);
+      foot = h('div', {class: 'tile-foot'}, 'Console: podman logs and stats');
+      loadConsole(component.id, consoleNode, foot);
+    } else if (live) {
+      body.append(h('iframe', {src: `${component.web_path}en-US/app/launcher/home`, title: `Live Splunk Web of ${displayName(component)}`}));
+      foot = liveFoot(component);
+    } else {
+      const preview = (component.status || {}).preview;
+      const failed = (component.status || {}).capture;
+      if (preview) {
+        body.append(h('img', {src: `/observer/captures/${preview.value.file}`, alt: `Preview of ${displayName(component)}`, loading: 'lazy'}));
+        foot = h('div', {class: 'tile-foot'}, 'Preview captured ', stamp(preview.observed_at), ` · ${preview.value.page || ''}`,
+          failed && failed.value.error ? h('span', {class: 'badge bad'}, ' last capture failed') : '');
+      } else {
+        body.append(h('div', {class: 'empty'}, failed && failed.value.error ? `Preview failed: ${failed.value.error}` : 'No preview captured yet. Switch to Live, or use “Capture previews”.'));
+        foot = h('div', {class: 'tile-foot'}, 'Preview');
       }
     }
-    function updateViewSource() {
-      if (!componentSource) return;
-      const source = currentViewSource(componentSource);
-      document.getElementById('source').textContent = 'Source: ' + (source || componentSource);
-      if (source) document.getElementById('view-time').textContent = 'View URL checked: ' + new Date().toLocaleString();
+    return [body, foot];
+  }
+
+  function layoutFrames() {
+    for (const frame of document.querySelectorAll('.tile-body iframe')) {
+      const box = frame.parentElement.getBoundingClientRect();
+      if (!box.width) continue;
+      const scale = Math.min(1, box.width / DESKTOP.width);
+      frame.style.width = `${Math.max(DESKTOP.width, box.width)}px`;
+      frame.style.height = `${box.height / scale}px`;
+      frame.style.transform = scale < 1 ? `scale(${scale})` : '';
     }
-    // Splunk lays out for a desktop window. "Whole screen" renders it at a desktop width
-    // and scales it down to the tile, so the full page stays visible and clickable.
-    const DESKTOP_WIDTH = 1440;
-    const fit = document.getElementById('fit');
-    try { fit.value = localStorage.getItem('observer.fit') || 'fit'; } catch (_error) { fit.value = 'fit'; }
-    function layoutView() {
-      const width = frame.clientWidth, height = frame.clientHeight;
-      const shrink = fit.value === 'fit';
-      const scale = shrink ? Math.min(1, width / DESKTOP_WIDTH) : 1;
-      frame.classList.toggle('actual', !shrink);
-      view.style.width = Math.max(DESKTOP_WIDTH, width) + 'px';
-      view.style.height = (shrink ? height / scale : Math.max(height, 900)) + 'px';
-      view.style.transform = scale < 1 ? `scale(${scale})` : '';
-      document.getElementById('scale').textContent = 'Shown at ' + Math.round(scale * 100) + '% of a ' + view.style.width + ' wide window';
+  }
+  window.addEventListener('resize', layoutFrames);
+  new ResizeObserver(layoutFrames).observe(grid);
+
+  async function loadConsole(id, node, foot) {
+    try {
+      const result = await api(`/observer/api/components/${encodeURIComponent(id)}/console`);
+      const resources = result.resources ? result.resources.value : null;
+      node.textContent = (resources ? `CPU ${resources.cpu_percent || '?'} · memory ${resources.memory || '?'}\n\n` : '') + (result.log || '(no output)');
+      node.scrollTop = node.scrollHeight;
+      foot.replaceChildren(`${result.source} · checked `, stamp(result.checked_at));
+    } catch (error) { node.textContent = `Console unavailable: ${error.message}`; }
+  }
+
+  function move(from, to) {
+    if (to < 0 || to >= layout.tiles.length || from === to) return;
+    const [tile] = layout.tiles.splice(from, 1);
+    layout.tiles.splice(to, 0, tile);
+    render();
+  }
+  async function saveLayout() {
+    const result = await post('/observer/api/layout', {layout: {tiles: layout.tiles, columns: layout.columns}});
+    savedLayout = result.layout;
+    render();
+  }
+
+  function renderFocus() {
+    const existing = document.querySelector('.focus');
+    if (existing && existing.dataset.id === focused) return;
+    existing?.remove();
+    const component = focused && byId(focused);
+    if (!component) return;
+    const view = history ? historical(component) : component;
+    const body = tileContent(view, isWeb(component) && !history)[0];
+    const main = h('div', {class: 'focus-main'});
+    if (isWeb(component) && !history) main.append(screenList(component, body.querySelector('iframe')));
+    main.append(body);
+    document.body.append(h('div', {class: 'focus', 'data-id': component.id, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
+      h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component), h('span', {class: 'muted'}, component.web_path || ''),
+        h('span', {style: 'flex:1'}),
+        isWeb(component) ? h('a', {href: `${component.web_path}en-US/app/launcher/home`, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
+        h('button', {type: 'button', onclick: () => openDrawer(component.id)}, 'Details'),
+        h('button', {type: 'button', onclick: () => { focused = null; render(); }}, 'Close (Esc)')),
+      main));
+  }
+
+  function screenList(component, frame) {
+    const panel = h('div', {class: 'screens', 'aria-label': 'Screens'}, h('p', {class: 'muted'}, 'Loading screens…'));
+    api(`/observer/api/components/${encodeURIComponent(component.id)}/screens`).then(result => {
+      const filter = h('input', {type: 'search', placeholder: `Filter ${result.screens.length} screens`, 'aria-label': 'Filter screens'});
+      const list = h('div', {});
+      const base = component.web_path.replace(/\/$/, '');
+      const draw = () => {
+        const term = filter.value.trim().toLowerCase();
+        const groups = new Map();
+        for (const screen of result.screens) {
+          const text = `${screen.app_label} ${screen.group || ''} ${screen.label}`.toLowerCase();
+          if (term && !text.includes(term)) continue;
+          const key = `${screen.app_label}${screen.app_version ? ` ${screen.app_version}` : ''}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(screen);
+        }
+        list.replaceChildren(...[...groups].map(([title, screens]) => h('section', {}, h('h4', {}, title),
+          screens.map(screen => h('button', {class: 'screen', type: 'button', title: `${screen.path} · ${screen.source}`,
+            'aria-current': String(frame.dataset.screen === screen.path),
+            onclick: () => { frame.dataset.screen = screen.path; frame.src = base + screen.path; draw(); }},
+            screen.group ? `${screen.group} › ${screen.label}` : screen.label)))));
+      };
+      filter.addEventListener('input', draw);
+      draw();
+      panel.replaceChildren(filter, list, h('p', {class: 'muted', style: 'font-size:.75rem'},
+        'From the installed apps’ navigation menus and Splunk’s built-in pages, checked ', stamp(result.checked_at), '.'));
+    }).catch(error => panel.replaceChildren(h('p', {class: 'notice'}, `Screens unavailable: ${error.message}`)));
+    return panel;
+  }
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (drawer) { drawer = null; render(); } else if (focused) { focused = null; render(); }
+  });
+
+  // --- overview ----------------------------------------------------------------------
+  function renderOverview() {
+    const wrapper = h('div', {});
+    wrapper.append(h('p', {class: 'muted'}, 'Discovered from podman and each instance’s splunkd REST API as the read-only lab_observer account. ',
+      'Every fact shows its source and check time. Names marked ', h('span', {class: 'badge owner'}, 'your label'), ' are your own edits.'));
+    if (lab.errors && lab.errors.length) {
+      wrapper.append(h('div', {class: 'notice'}, `${lab.errors.length} discovery checks failed: `,
+        lab.errors.slice(0, 6).map(error => `${error.source} (${error.error})`).join('; '), lab.errors.length > 6 ? '…' : ''));
     }
-    fit.addEventListener('change', () => {
-      try { localStorage.setItem('observer.fit', fit.value); } catch (_error) { /* per-device preference only */ }
-      layoutView();
-    });
-    new ResizeObserver(layoutView).observe(frame);
-    layoutView();
-    document.getElementById('reload').addEventListener('click', () => { view.src = view.src; refresh(); });
-    view.addEventListener('load', () => {
-      const viewLoadedAt = new Date();
-      document.getElementById('loaded-time').textContent = 'Document loaded: ' + viewLoadedAt.toLocaleString();
-      refresh();
-    });
-    refresh();
-    setInterval(refresh, 15000);
-    setInterval(updateViewSource, 1000);
+    wrapper.append(h('h2', {}, 'Topology'));
+    const groups = h('div', {class: 'groups'});
+    for (const group of lab.groups) {
+      const title = group.type === 'indexer_cluster' ? `Indexer cluster “${group.label || '?'}”` : `Search head cluster “${group.label || '?'}”`;
+      const detail = group.type === 'indexer_cluster' ? `Manager ${group.manager}` : `Captain ${group.captain || 'unknown'}`;
+      groups.append(h('div', {class: 'card'}, h('h3', {}, title), h('div', {class: 'muted'}, detail, ' · ', group.source, ' · ', stamp(group.checked_at)),
+        h('div', {class: 'chips'}, group.members.map(id => byId(id) ? h('button', {class: 'chip', type: 'button', onclick: () => openDrawer(id)}, displayName(byId(id)), ' ', stateBadge(byId(id))) : h('span', {class: 'chip'}, id, ' (not a lab container)')))));
+    }
+    wrapper.append(groups);
+    wrapper.append(h('h2', {}, 'Relationships'));
+    wrapper.append(h('table', {}, h('thead', {}, h('tr', {}, ['From', 'Relationship', 'To', 'Detail', 'Source', 'Checked'].map(text => h('th', {}, text)))),
+      h('tbody', {}, lab.relationships.map(rel => h('tr', {},
+        h('td', {}, rel.from), h('td', {}, rel.type), h('td', {}, rel.to), h('td', {}, rel.detail || ''), h('td', {class: 'fact-source'}, rel.source), h('td', {}, stamp(rel.checked_at)))))));
+    wrapper.append(h('h2', {}, 'Components'));
+    wrapper.append(h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Kind', 'Splunk roles', 'Version', 'State', 'Web', 'Errors', 'Checked'].map(text => h('th', {}, text)))),
+      h('tbody', {}, lab.components.map(component => {
+        const status = component.status || {};
+        const web = status.web ? status.web.value.http_status : null;
+        const messages = status.splunk_messages ? status.splunk_messages.value : null;
+        const errors = messages && messages.messages ? messages.messages.filter(item => ['error', 'critical'].includes(item.severity)).length : null;
+        const checked = status.container ? status.container.observed_at : component.facts.container_state.checked_at;
+        return h('tr', {class: 'clickable', onclick: () => openDrawer(component.id)},
+          h('td', {}, h('strong', {}, displayName(component)), component.owner_name ? [' ', h('span', {class: 'badge owner'}, 'your label'), h('div', {class: 'muted'}, `discovered as ${component.id}`)] : '',
+            component.owner_description ? h('div', {class: 'muted'}, component.owner_description) : ''),
+          h('td', {}, kindLabel(component.kind)), h('td', {}, rolesOf(component)), h('td', {}, (component.facts.splunk_version || {}).value || ''),
+          h('td', {}, stateBadge(component)),
+          h('td', {}, isWeb(component) ? h('span', {class: `badge ${web && web < 500 ? 'ok' : 'bad'}`}, web ? `HTTP ${web}` : 'unreachable') : '—'),
+          h('td', {}, errors === null ? '' : h('span', {class: `badge ${errors ? 'bad' : 'ok'}`}, String(errors))),
+          h('td', {}, stamp(checked)));
+      }))));
+    return wrapper;
+  }
+
+  function renderChanges() {
+    const wrapper = h('div', {});
+    wrapper.append(h('p', {class: 'muted'}, 'State changes recorded by the background checks (every minute), newest first. Each links to the observation that showed it.'));
+    wrapper.append(changesTable(lab.recent_changes, true));
+    return wrapper;
+  }
+  function changesTable(changes, withComponent) {
+    if (!changes.length) return h('p', {class: 'muted'}, 'No changes recorded yet.');
+    return h('table', {}, h('thead', {}, h('tr', {}, [withComponent ? 'Component' : null, 'When', 'Signal', 'Change', 'Source', 'Evidence'].filter(Boolean).map(text => h('th', {}, text)))),
+      h('tbody', {}, changes.map(change => h('tr', {},
+        withComponent ? h('td', {}, h('a', {href: '#', onclick: event => { event.preventDefault(); openDrawer(change.component); }}, change.component)) : null,
+        h('td', {}, stamp(change.observed_at)), h('td', {}, change.signal),
+        h('td', {}, change.previous === null ? `first seen: ${change.current}` : `${change.previous} → ${change.current}`),
+        h('td', {class: 'fact-source'}, change.source),
+        h('td', {}, change.observation_id ? h('a', {href: `/observer/api/observations/${change.observation_id}`, target: '_blank', rel: 'noopener'}, `#${change.observation_id}`) : '')))));
+  }
+
+  // --- details drawer ----------------------------------------------------------------
+  async function openDrawer(id) {
+    drawer = {id, data: null};
+    render();
+    try { drawer.data = await api(`/observer/api/components/${encodeURIComponent(id)}`); } catch (error) { drawer.error = error.message; }
+    if (drawer && drawer.id === id) render();
+  }
+  function renderDrawer() {
+    document.querySelector('.drawer')?.remove();
+    if (!drawer) return;
+    const panel = h('aside', {class: 'drawer', 'aria-label': 'Component details'});
+    panel.append(h('div', {class: 'row'}, h('h2', {style: 'margin:0;flex:1'}, drawer.data ? displayName(drawer.data.component) : drawer.id),
+      h('button', {type: 'button', onclick: () => { drawer = null; render(); }}, 'Close')));
+    if (drawer.error) panel.append(h('p', {class: 'notice'}, drawer.error));
+    if (!drawer.data) { panel.append(h('p', {class: 'muted'}, 'Loading…')); document.body.append(panel); return; }
+    const {component, latest, changes} = drawer.data;
+    const nameInput = h('input', {value: component.owner_name || '', placeholder: component.id, maxlength: 80});
+    const descriptionInput = h('textarea', {rows: 2, maxlength: 500, placeholder: 'What this component is for'}, component.owner_description || '');
+    panel.append(h('h3', {}, 'Your label'),
+      h('p', {class: 'muted'}, 'Shown instead of the discovered name. Discovered facts are never changed.'),
+      h('label', {}, 'Name', nameInput), h('label', {}, 'Description', descriptionInput),
+      h('div', {class: 'row', style: 'margin-top:.5rem'},
+        h('button', {type: 'button', onclick: async () => { await post(`/observer/api/components/${encodeURIComponent(component.id)}/label`, {name: nameInput.value, description: descriptionInput.value}); await refresh(); openDrawer(component.id); }}, 'Save label'),
+        h('button', {type: 'button', onclick: async () => { await post(`/observer/api/components/${encodeURIComponent(component.id)}/label`, {name: '', description: ''}); await refresh(); openDrawer(component.id); }}, 'Clear'),
+        component.owner_edited_at ? h('span', {class: 'muted'}, 'Edited ', stamp(component.owner_edited_at)) : null));
+    panel.append(h('h3', {}, 'Discovered facts'), h('table', {}, h('tbody', {}, Object.entries(component.facts).map(([key, item]) => h('tr', {},
+      h('th', {}, key), h('td', {}, Array.isArray(item.value) ? item.value.join(', ') : String(item.value ?? '—'),
+        h('div', {class: 'fact-source'}, item.source, ' · ', stamp(item.checked_at))))))));
+    panel.append(h('h3', {}, 'Latest observations'), h('table', {}, h('tbody', {}, Object.entries(latest).filter(([, item]) => item).map(([kind, item]) => h('tr', {},
+      h('th', {}, kind), h('td', {}, summarize(kind, item.value), h('div', {class: 'fact-source'}, item.source, ' · ', stamp(item.observed_at), ' · ',
+        h('a', {href: `/observer/api/observations/${item.id}`, target: '_blank', rel: 'noopener'}, `observation #${item.id}`))))))));
+    if (latest.splunk_messages && latest.splunk_messages.value.messages && latest.splunk_messages.value.messages.length) {
+      panel.append(h('h3', {}, 'splunkd messages'), h('pre', {}, latest.splunk_messages.value.messages.map(item => `[${item.severity}] ${item.message}`).join('\n')));
+    }
+    panel.append(h('h3', {}, 'History'), changesTable(changes, false));
+    document.body.append(panel);
+  }
+  function summarize(kind, value) {
+    if (value.error) return `error: ${value.error}`;
+    if (kind === 'container') return `${value.state}${value.health ? `, ${value.health}` : ''} (${value.status || ''})`;
+    if (kind === 'resources') return `CPU ${value.cpu_percent ?? '?'} · memory ${value.memory ?? '?'}`;
+    if (kind === 'web') return value.http_status ? `HTTP ${value.http_status}` : 'unreachable';
+    if (kind === 'splunk_health') {
+      const degraded = Object.entries(value.degraded_features || {});
+      return `${value.health}${degraded.length ? ` — ${degraded.map(([feature, color]) => `${feature}: ${color}`).join(', ')}` : ''}`;
+    }
+    if (kind === 'splunk_messages') return `${value.count} message(s)`;
+    if (kind === 'capture') return value.file ? `screenshot of ${value.page || 'page'}` : 'capture failed';
+    return JSON.stringify(value);
+  }
+
+  // --- wiring -------------------------------------------------------------------------
+  for (const button of document.querySelectorAll('nav button')) button.addEventListener('click', () => { tab = button.dataset.tab; render(); });
+  document.getElementById('discover').addEventListener('click', async () => { await post('/observer/api/discover'); setTimeout(refresh, 8000); });
+  document.getElementById('capture').addEventListener('click', async () => { await post('/observer/api/captures'); refresh(); });
+  (async () => {
+    await loadLayout();
+    await refresh();
+    setInterval(refresh, 20000);
+  })();
   </script>
 </body>
 </html>

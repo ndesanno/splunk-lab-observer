@@ -13,6 +13,12 @@ A navigable page or workflow within a component's user interface.
 **Component view**:
 The owner's direct view of a lab component at a point in time. It may show a real web screen or a console and telemetry view for a component without a web interface.
 
+**Preview**:
+A screenshot of a component view taken by the observer at a recorded time. A preview stands in for a live view and always shows its capture time.
+
+**Owner label**:
+A name or description the lab owner gave a component. It is shown instead of the discovered name but never replaces a discovered fact.
+
 **Observation**:
 A timestamped fact collected directly from a component, such as its status, a search result, a log entry, or a captured view.
 
