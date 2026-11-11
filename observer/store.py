@@ -31,6 +31,9 @@ class Store:
         # both write without blocking readers.
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
+        # Keep the log file small once its pages are written back (it otherwise stays at its largest size).
+        self.db.execute("PRAGMA journal_size_limit=8388608")
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         with self.lock, self.db:
             self.db.executescript("""
                 CREATE TABLE IF NOT EXISTS observations (
@@ -182,6 +185,8 @@ class Store:
             self.db.executemany("DELETE FROM runs WHERE id = ?", [(run_id,) for run_id in expired])
         for run_id in expired:
             shutil.rmtree(self.data_dir / "runs" / run_id, ignore_errors=True)
+        with self.lock:
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return expired
 
     def save_run(self, record):

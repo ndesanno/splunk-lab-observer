@@ -72,6 +72,8 @@ sudo loginctl enable-linger "$USER"   # once, so it starts at boot and not only 
 
 This writes a systemd user service for this checkout (`journalctl --user -u splunk-lab-observer.service` for its log). `python -m observer.service remove` takes it out again. The lab itself, its router and the forwarders are started from the lab checkout (`./lab.sh start`, `./observer.sh router`).
 
+Ask Claude uses `claude-opus-5-5`; set `OBSERVER_CLAUDE_MODEL` in the observer's environment to use another model id.
+
 Run the tests with:
 
 ```sh

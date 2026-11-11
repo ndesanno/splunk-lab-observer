@@ -29,7 +29,8 @@ try:
 except ImportError:  # the observer itself needs only the standard library
     anthropic = None
 
-MODEL = "claude-opus-5-5"
+# The model can be changed without editing code: OBSERVER_CLAUDE_MODEL=<model id> in the observer's environment.
+MODEL = os.environ.get("OBSERVER_CLAUDE_MODEL", "").strip() or "claude-opus-5-5"
 EFFORT = "medium"
 MAX_TOKENS = 16000
 MAX_ITERATIONS = 40
