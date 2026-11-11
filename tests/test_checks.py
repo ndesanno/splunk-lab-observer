@@ -195,3 +195,14 @@ class ChecksApiTest(ChecksFixture):
             time.sleep(0.05)
         self.assertEqual(mine["last"]["result"], "pass")
         self.assertTrue(mine["last"]["run_id"])
+
+
+class FixtureGuardTest(ChecksFixture):
+    def test_the_fixture_run_does_nothing_until_the_owner_has_approved_it(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, "-m", "observer.fixture_hindsight", "--config-dir", str(self.config), "--data-dir", str(self.config)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--approved-by-owner", result.stderr)
+        self.assertFalse((self.config / "observer.db").exists())
