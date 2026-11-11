@@ -24,8 +24,13 @@ class Store:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.lock = threading.Lock()
-        self.db = sqlite3.connect(self.data_dir / "observer.db", check_same_thread=False)
+        self.version = 0  # goes up with every recorded observation or setting, so readers can cache
+        self.db = sqlite3.connect(self.data_dir / "observer.db", check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
+        # Claude Code's terminal sessions write from a second process; a write-ahead log lets
+        # both write without blocking readers.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         with self.lock, self.db:
             self.db.executescript("""
                 CREATE TABLE IF NOT EXISTS observations (
@@ -71,6 +76,7 @@ class Store:
                     "INSERT INTO changes (component, signal, observed_at, epoch, previous, current, source, observation_id)"
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (component, signal, observed_at, epoch, None if row is None else row["value"], current, source, observation_id))
+            self.version += 1
         return observation_id
 
     def observation(self, observation_id):
@@ -214,6 +220,7 @@ class Store:
     def put_setting(self, name, value):
         with self.lock, self.db:
             self.db.execute("INSERT OR REPLACE INTO settings (name, value) VALUES (?, ?)", (name, json.dumps(value)))
+            self.version += 1
 
     @staticmethod
     def _observation(row):

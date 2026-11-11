@@ -103,6 +103,16 @@ class LanAccessTest(unittest.TestCase):
         status, _headers, _body = request(port, self.context, "GET", "/observer/", headers={"Cookie": cookie})
         self.assertEqual(status, 303)
 
+    def test_a_stalled_tls_handshake_does_not_hold_up_other_connections(self):
+        import socket
+        stalled = [socket.create_connection(("127.0.0.1", self.observer.server_port)) for _ in range(3)]  # never speak TLS
+        try:
+            status, _headers, _body = request(self.observer.server_port, self.context, "GET", "/observer/login")
+            self.assertEqual(status, 200)
+        finally:
+            for item in stalled:
+                item.close()
+
     def test_cross_site_request_cannot_use_authenticated_proxy(self):
         port = self.observer.server_port
         status, headers, _body = request(port, self.context, "POST", "/observer/login", body=f"password={self.password}", headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": f"https://127.0.0.1:{port}"})

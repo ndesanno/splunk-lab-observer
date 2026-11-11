@@ -1,10 +1,13 @@
 """Serve the observer page and a same-origin view of one Splunk component."""
 
 import argparse
+import gzip
+import hashlib
 import http.client
 import json
 import re
 import shutil
+import socket
 import ssl
 import threading
 import time
@@ -25,11 +28,18 @@ LOGIN_PAGE = Path(__file__).with_name("login.html")
 MISSING_CAPTURE_SECONDS = 15 * 60
 COMPONENT_PATH = re.compile(r"^/lab/([A-Za-z0-9][A-Za-z0-9_.-]{0,62})/")
 COOKIE_ROOT_PATH = re.compile(r"(;\s*path=)/(?=;|$)", re.I)
+COMPRESSIBLE = ("text/", "application/json", "application/javascript")
+# A browser keeps its connections open between requests; an idle one is dropped after this long.
+IDLE_SECONDS = 75
+UPSTREAM_TIMEOUT_SECONDS = 60
+STALE_UPSTREAM = (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
 
 
 class ObserverServer(ThreadingHTTPServer):
     daemon_threads = True
+    # A Splunk page asks for dozens of files at once and a wall holds several pages.
+    request_queue_size = 128
 
     def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None):
         secure_mode = any(item is not None for item in (auth_file, certfile, keyfile))
@@ -58,12 +68,33 @@ class ObserverServer(ThreadingHTTPServer):
         self.allowed_hosts = {address[0]} if secure_mode else {"127.0.0.1", "localhost"}
         self.lab, self.store, self.capture, self.monitor, self.assistant = lab, store, capture, monitor, assistant
         self.coverage = coverage
+        self.tls_context = context
+        self.summary_cache = (None, None)  # (store version and background status, summary)
         super().__init__(address, ObserverHandler)
-        if context is not None:
-            self.socket = context.wrap_socket(self.socket, server_side=True)
+
+    def process_request_thread(self, request, client_address):
+        # Headers and body are written separately; on a kept connection the body would otherwise
+        # wait for the browser's delayed acknowledgement of the headers.
+        request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # The TLS handshake runs here, in the connection's own thread: on the listening socket it
+        # would run in the accept loop, where one slow client holds up every other connection.
+        if self.tls_context is not None:
+            try:
+                request.settimeout(10)
+                request = self.tls_context.wrap_socket(request, server_side=True)
+            except (OSError, ssl.SSLError):
+                self.shutdown_request(request)
+                return
+        super().process_request_thread(request, client_address)
 
 
 class ObserverHandler(BaseHTTPRequestHandler):
+    # Connections stay open between requests, so a page's many files do not each pay for a new
+    # TCP and TLS handshake. Every response therefore states its length or is sent in chunks.
+    protocol_version = "HTTP/1.1"
+    timeout = IDLE_SECONDS
+    upstream = None
+
     def do_GET(self):
         self._route()
 
@@ -82,7 +113,30 @@ class ObserverHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._route()
 
+    def finish(self):
+        if self.upstream is not None:
+            self.upstream.close()
+        super().finish()
+
     def _route(self):
+        self.body_read = False
+        try:
+            self._dispatch()
+        finally:
+            if self._body_unread():
+                self.close_connection = True
+
+    def _body_unread(self):
+        """A request body nobody read would be taken for the next request on this connection."""
+        sent = self.headers.get("Content-Length", "0") not in {"", "0"} or "Transfer-Encoding" in self.headers
+        return sent and not self.body_read
+
+    def _end_headers(self):
+        if self._body_unread():
+            self.send_header("Connection", "close")
+        self.end_headers()
+
+    def _dispatch(self):
         browser_origin = self._browser_origin()
         if browser_origin is None or not self._same_origin_request(browser_origin):
             self._send(403, b"Request origin not allowed", "text/plain; charset=utf-8")
@@ -109,7 +163,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 ("Set-Cookie", f"{COOKIE_NAME}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict")
             ])
         elif self.path == "/observer/" and self.command == "GET":
-            self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8", cache="no-cache", revalidate=True)
         elif self.path.startswith("/observer/"):
             self._observer_route()
         elif COMPONENT_PATH.match(self.path):
@@ -129,7 +183,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")[1:]  # after "observer"
         get, post = self.command == "GET", self.command == "POST"
         if parts == ["api", "lab"] and get:
-            self._json(200, self._lab_summary())
+            self._json(200, self._cached_lab_summary(), revalidate=True)
         elif len(parts) == 3 and parts[:2] == ["api", "components"] and get:
             component = lab.component(parts[2])
             if component is None:
@@ -388,6 +442,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if self.server.monitor:
                 self.server.monitor.status["last_error"] = f"{utc_now()} {error.__class__.__name__}: {error}"
 
+    def _cached_lab_summary(self):
+        """The summary changes only when something is recorded, so open pages share one copy."""
+        server = self.server
+        key = (server.store.version, json.dumps([server.monitor.status if server.monitor else None,
+                                                 server.capture.status if server.capture else None], default=str))
+        if server.summary_cache[0] != key:
+            server.summary_cache = (key, self._lab_summary())
+        return server.summary_cache[1]
+
     def _lab_summary(self):
         lab, store = self.server.lab, self.server.store
         snapshot = lab.snapshot()
@@ -461,6 +524,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid_request"})
             return None
         try:
+            self.body_read = True
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             self._json(400, {"error": "invalid_json"})
@@ -470,8 +534,9 @@ class ObserverHandler(BaseHTTPRequestHandler):
             return None
         return body
 
-    def _json(self, status, value):
-        self._send(status, json.dumps(value).encode(), "application/json")
+    def _json(self, status, value, revalidate=False):
+        self._send(status, json.dumps(value).encode(), "application/json", cache="no-cache" if revalidate else "no-store",
+                   revalidate=revalidate)
 
     def _browser_origin(self):
         try:
@@ -514,6 +579,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         if length < 0 or length > 4096 or not self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
             self._send(400, b"Invalid login request", "text/plain; charset=utf-8")
             return
+        self.body_read = True
         fields = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
         password = fields.get("password", [""])[0]
         if not self.server.login.password_matches(password):
@@ -531,21 +597,62 @@ class ObserverHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for key, value in headers:
             self.send_header(key, value)
-        self.end_headers()
+        self._end_headers()
 
-    def _send(self, status, body, content_type, cache="no-store"):
+    def _send(self, status, body, content_type, cache="no-store", revalidate=False):
+        """Send a complete response. Large text is compressed for browsers that accept it; with
+        revalidate the response carries a tag, and a request that already has that body gets 304."""
+        headers = [("Content-Type", content_type), ("Cache-Control", cache), ("X-Frame-Options", "DENY")]
+        if revalidate and status == 200:
+            tag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+            headers.append(("ETag", tag))
+            if tag in [item.strip() for item in self.headers.get("If-None-Match", "").split(",")]:
+                status, body = 304, b""
+        if len(body) > 1024 and content_type.startswith(COMPRESSIBLE):
+            headers.append(("Vary", "Accept-Encoding"))
+            if "gzip" in self.headers.get("Accept-Encoding", ""):
+                body = gzip.compress(body, compresslevel=5)
+                headers.append(("Content-Encoding", "gzip"))
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", cache)
-        self.send_header("X-Frame-Options", "DENY")
-        self.end_headers()
-        self.wfile.write(body)
+        for key, value in headers:
+            self.send_header(key, value)
+        if status != 304:
+            self.send_header("Content-Length", str(len(body)))
+        self._end_headers()
+        if self.command != "HEAD" and status != 304:
+            self.wfile.write(body)
+
+    def _upstream_response(self, body, headers):
+        """Ask the router, on this connection's own upstream connection when it has one. A kept
+        connection the router has since closed fails before any reply; that request is sent again."""
+        for attempt in (0, 1):
+            reused = self.upstream is not None
+            if not reused:
+                self.upstream = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port,
+                                                           timeout=UPSTREAM_TIMEOUT_SECONDS)
+            try:
+                self.upstream.request(self.command, self.path, body=body, headers=headers)
+                return self.upstream.getresponse()
+            except STALE_UPSTREAM:
+                self._drop_upstream()
+                if not reused or attempt:
+                    raise
+            except (OSError, http.client.HTTPException):
+                self._drop_upstream()
+                raise
+
+    def _drop_upstream(self):
+        if self.upstream is not None:
+            self.upstream.close()
+            self.upstream = None
 
     def _proxy(self, browser_origin):
         component = COMPONENT_PATH.match(self.path).group(1)
         if self.server.lab is not None and component not in self.server.lab.web_components():
             self._send(404, b"Unknown component", "text/plain; charset=utf-8")
+            return
+        if "Transfer-Encoding" in self.headers:
+            self._send(411, b"Send the request with a Content-Length", "text/plain; charset=utf-8")
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -555,6 +662,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         if length < 0 or length > 8 * 1024 * 1024:
             self._send(413, b"Request too large", "text/plain; charset=utf-8")
             return
+        self.body_read = True
         body = self.rfile.read(length) if length else None
         headers = {key: value for key, value in self.headers.items() if key.lower() not in HOP_HEADERS | {"host", "content-length"}}
         if self.server.login and "Cookie" in headers:
@@ -567,11 +675,13 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if key in headers:
                 headers[key] = headers[key].replace(browser_origin, self.server.upstream_origin, 1)
 
-        connection = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port, timeout=15)
         response_started = False
         try:
-            connection.request(self.command, self.path, body=body, headers=headers)
-            response = connection.getresponse()
+            response = self._upstream_response(body, headers)
+            # Without a length the body is sent in chunks as it arrives, which HTTP/1.0 clients cannot read.
+            bodiless = self.command == "HEAD" or response.status in {204, 304} or response.status < 200
+            sized = response.getheader("Content-Length") is not None
+            chunked = not bodiless and not sized and self.request_version != "HTTP/1.0"
             self.send_response(response.status, response.reason)
             response_started = True
             for key, value in response.getheaders():
@@ -584,16 +694,32 @@ class ObserverHandler(BaseHTTPRequestHandler):
                     # for "/" would collide across components. Keep each to its component's path.
                     value = COOKIE_ROOT_PATH.sub(lambda match: f"{match.group(1)}/lab/{component}/", value)
                 self.send_header(key, value)
-            self.send_header("Connection", "close")
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            elif not bodiless and not sized:
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
-            if self.command != "HEAD":
+            if bodiless:
+                response.read()
+            elif chunked:
+                while True:
+                    block = response.read1(64 * 1024)
+                    if not block:
+                        break
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(block), block))
+                    self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+            else:
                 shutil.copyfileobj(response, self.wfile, length=64 * 1024)
-            self.close_connection = True
+            if response.will_close:
+                self._drop_upstream()
         except (OSError, http.client.HTTPException):
-            if not response_started:
+            self._drop_upstream()
+            if response_started:
+                self.close_connection = True  # the reply was cut short; the browser must not wait for more
+            else:
                 self._send(502, b"Component unavailable", "text/plain; charset=utf-8")
-        finally:
-            connection.close()
 
     def log_message(self, _format, *_args):
         # Browser requests can contain credentials or sensitive query parameters.

@@ -98,6 +98,7 @@ class FakeSource:
 
 class FakeRouterHandler(BaseHTTPRequestHandler):
     """Splunk Web behind the observer router: every component under /lab/<name>/."""
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self):
         parts = self.path.split("/")
@@ -108,9 +109,21 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if self.path == f"/lab/{name}/":
             self.send_response(303)
             self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/lab/{name}/en-US/")
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         self.server.last_cookie = self.headers.get("Cookie", "")
+        self.server.connections.add(self.client_address)
+        if self.path.endswith("/stream"):  # a reply without a length, sent in pieces as Splunk streams results
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            for piece in (b"first ", b"second ", b"third"):
+                self.wfile.write(piece)
+                self.wfile.flush()
+            return
         body = f"<h1>Splunk Web of {name}</h1>".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
@@ -133,6 +146,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 def start_router():
     router = ThreadingHTTPServer(("127.0.0.1", 0), FakeRouterHandler)
     router.last_cookie = ""
+    router.connections = set()
     threading.Thread(target=router.serve_forever, daemon=True).start()
     return router
 

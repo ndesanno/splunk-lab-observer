@@ -99,6 +99,44 @@ class ComponentViewTest(unittest.TestCase):
                                        {"Content-Type": "application/json", "Origin": "http://another-website.test"})
         self.assertEqual(status, 403)
 
+    def test_a_browser_connection_is_reused_for_a_page_s_many_requests(self):
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=3)
+        seen = []
+        for path in ("/lab/p-sh1/en-US/", "/lab/p-sh1/en-US/stream", "/lab/p-sh1/en-US/", "/observer/api/layout", "/lab/p-sh2/en-US/"):
+            connection.request("GET", path)
+            response = connection.getresponse()
+            seen.append((response.status, response.version, response.getheader("Transfer-Encoding"), response.read()))
+            self.assertFalse(response.will_close, path)
+        connection.close()
+        self.assertEqual([item[0] for item in seen], [200] * 5)
+        self.assertEqual(seen[1][1:], (11, "chunked", b"first second third"))  # no length upstream: sent on in chunks
+        self.assertIn(b"Splunk Web of p-sh2", seen[4][3])
+        self.assertEqual(len(self.router.connections), 2)  # one kept upstream connection, replaced after the stream closed it
+
+        # A request whose body is refused unread must not leave that body to be read as the next request.
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=3)
+        connection.request("POST", "/observer/api/layout", "x" * 2000, {"Content-Type": "text/plain", "Origin": f"http://127.0.0.1:{self.port}"})
+        response = connection.getresponse()
+        self.assertEqual((response.status, response.will_close), (400, True))
+        connection.close()
+
+    def test_observer_data_is_compressed_and_not_resent_unchanged(self):
+        status, headers, body = call(self.port, "GET", "/observer/api/lab", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual((status, header(headers, "Content-Encoding")), (200, ["gzip"]))
+        import gzip
+        lab = json.loads(gzip.decompress(body))
+        self.assertEqual(len(lab["components"]), len(self.lab.snapshot()["components"]))
+        tag = header(headers, "ETag")[0]
+        status, headers, body = call(self.port, "GET", "/observer/api/lab", headers={"If-None-Match": tag})
+        self.assertEqual((status, body), (304, b""))
+        self.store.record("p-sh1", "web", "test", {"http_status": 503}, {"web": "unavailable"})
+        status, _headers, body = call(self.port, "GET", "/observer/api/lab", headers={"If-None-Match": tag})
+        self.assertEqual(status, 200)
+        component = next(item for item in json.loads(body)["components"] if item["id"] == "p-sh1")
+        self.assertEqual(component["status"]["web"]["value"], {"http_status": 503})
+        status, headers, _body = call(self.port, "GET", "/observer/")
+        self.assertEqual(call(self.port, "GET", "/observer/", headers={"If-None-Match": header(headers, "ETag")[0]})[0], 304)
+
     def test_proxy_cannot_bind_beyond_loopback(self):
         with self.assertRaises(ValueError):
             create_server(("0.0.0.0", 0), f"http://127.0.0.1:{self.router.server_port}")
