@@ -193,7 +193,7 @@ Suggested shape for stories 24, 30 and 38 together: a **check** is data, not a c
 | 3.2 page tests | `tests/test_page.py` drives the page in the capture browser image. | Splitting `view.html` into files. |
 | 3.3 reading | The shared view sends visible text only. | An allow-list of regions. |
 | 3.4 same origin | ADR 0006 records it as an accepted risk for this lab. | |
-| 3.5 two page-request paths | | Still two implementations. |
+| 3.5 two page-request paths | One path: `Run.ask_page` puts every request and answer through the store, for runs in the observer and for Claude Code sessions alike; the server no longer branches on the kind of run. | Approvals are still held in memory, so they do not survive a restart. |
 | 3.6 run records | Runs left running are marked interrupted at startup. | Events as rows. |
 | 3.7 store | Unchanged observations update one row; a one-time merge took the live database from about 300,000 rows to 79,700; WAL. | |
 | 3.8 startup | `python -m observer.service install` writes a systemd user service; the live observer runs from it. | Start at boot needs the owner to run `sudo loginctl enable-linger "$USER"`. |

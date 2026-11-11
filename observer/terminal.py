@@ -25,12 +25,10 @@ Commands never carry credentials; write only what the owner may see.
 
 import argparse
 import json
-import secrets
 import sys
-import time
 from pathlib import Path
 
-from observer.assistant import PAGE_STALE_SECONDS, PAGE_TIMEOUT_SECONDS, Run, _screen_path
+from observer.assistant import Run
 from observer.coverage import CASES, Coverage
 from observer.store import DEFAULT_DATA_DIR, Store, utc_now
 
@@ -48,36 +46,7 @@ def current_run(store, data_dir):
 
 def ask_page(store, run, action, payload):
     """Have the owner's open page do one action in its live view; wait for the reading it returns."""
-    if time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
-        # An open page follows a session only once it does something after the page opened, so
-        # give a page that was opened during a quiet spell a moment to pick this session up.
-        run.save()
-        deadline = time.time() + PAGE_STALE_SECONDS
-        while time.time() < deadline and time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
-            time.sleep(0.5)
-    if time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
-        raise RuntimeError("No observer page is following this session, so there is no shared view. "
-                           "Ask the owner to open the observer page.")
-    request_id = secrets.token_hex(4)
-    store.add_page_request(request_id, run.id)
-    item = run.event("browser", request_id=request_id, action=action, payload=payload, status="pending")
-    deadline = time.time() + PAGE_TIMEOUT_SECONDS
-    answer = None
-    while time.time() < deadline:
-        answer = store.page_request(request_id)
-        if answer and answer["status"] == "done":
-            break
-        time.sleep(0.4)
-    if not answer or answer["status"] != "done":
-        store.close_page_request(request_id, "expired")
-        run.update_event(item["seq"], status="expired")
-        raise RuntimeError("The owner's page did not answer within 15 minutes")
-    result = answer["result"]
-    run.update_event(item["seq"], status="done" if answer["ok"] else "failed", summary=result.get("summary"),
-                     done_at=utc_now(), summary_url=_screen_path(result.get("url")))
-    if not answer["ok"]:
-        raise RuntimeError(result.get("error") or "The page could not do that")
-    return result
+    return run.ask_page(action, payload, wait_for_page=True)
 
 
 def format_reading(reading):

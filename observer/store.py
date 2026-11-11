@@ -217,14 +217,15 @@ class Store:
                                    (limit,)).fetchall()
         return [dict(row) for row in rows]
 
-    # --- the shared view for runs outside this process (Claude Code in the terminal) ----------
+    # --- the shared view: one path for every run, in this process or in Claude Code's ----------
 
-    def page_watched(self, run_id, paused=None):
+    def page_watched(self, run_id, paused=None, seen=None):
         """An observer page polled this run (and, with paused, the owner paused or resumed it)."""
         with self.lock, self.db:
             self.db.execute("INSERT INTO page_watch (run_id, seen, paused) VALUES (?, ?, ?) ON CONFLICT(run_id) DO UPDATE "
                             "SET seen = excluded.seen, paused = COALESCE(?, paused)",
-                            (run_id, time.time(), int(bool(paused)), None if paused is None else int(bool(paused))))
+                            (run_id, time.time() if seen is None else seen, int(bool(paused)),
+                             None if paused is None else int(bool(paused))))
 
     def page_watch(self, run_id):
         with self.lock:

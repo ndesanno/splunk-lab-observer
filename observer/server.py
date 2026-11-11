@@ -10,7 +10,6 @@ import shutil
 import socket
 import ssl
 import threading
-import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import CookieError, SimpleCookie
@@ -366,11 +365,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if run is None:
                 self._json(404, {"error": "unknown_run"})
             else:
-                live = assistant.runs.get(parts[1])
-                if live is not None:  # a page is watching, so the shared view can be used
-                    live.page_seen = time.time()
-                elif run.record.get("origin") == "terminal" and run.record.get("status") == "running":
-                    self.server.store.page_watched(parts[1])  # Claude Code checks this before using the view
+                if run.record.get("status") in {"running", "waiting_for_approval"}:
+                    self.server.store.page_watched(parts[1])  # a page is watching, so the shared view can be used
                 self._json(200, run.view(int(since) if since.isdigit() else 0))
         elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "messages" and post:
             body = self._read_json()
@@ -389,10 +385,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
             body = self._read_json()
             if body is None:
                 return
-            run = assistant.runs.get(parts[1])
-            accepted = run.page_result(parts[3], body.get("ok"), body.get("result")) if run is not None else \
-                self.server.store.answer_page_request(parts[1], parts[3], body.get("ok"), body.get("result"))
-            if not accepted:
+            if not self.server.store.answer_page_request(parts[1], parts[3], body.get("ok"), body.get("result")):
                 self._json(409, {"error": "no_pending_request"})
                 return
             self._json(200, {"accepted": True})

@@ -163,9 +163,7 @@ class Run:
         self.lock = threading.Lock()
         self.cancel = threading.Event()
         self.approvals = {}  # approval id -> (threading.Event, decision dict)
-        self.page_requests = {}  # request id -> (threading.Event, result dict)
         self.screens = {}  # component -> {ref: element} from the owner's page's last reading
-        self.page_seen = 0.0  # last time an observer page polled this run
         if record:
             self.record = record
         else:
@@ -234,37 +232,53 @@ class Run:
         self.set_status("running")
         return decision
 
-    def ask_page(self, action, payload):
+    def ask_page(self, action, payload, wait_for_page=False):
         """Ask the owner's open observer page to read or act in its live Splunk view, and wait for the result.
-        The page holds requests while the owner has paused or taken over."""
-        if time.time() - self.page_seen > PAGE_STALE_SECONDS:
-            raise RuntimeError("The owner's observer page is not open on this run, so there is no shared view to use")
+        The page holds requests while the owner has paused or taken over. The request and its answer
+        go through the store, so a run in this process and a Claude Code session use the same path."""
+        watched = lambda: time.time() - self.store.page_watch(self.id)["seen"] <= PAGE_STALE_SECONDS  # noqa: E731
+        if not watched() and wait_for_page:
+            # An open page follows a session only once it does something after the page opened, so
+            # give a page that was opened during a quiet spell a moment to pick this run up.
+            self.save()
+            deadline = time.time() + PAGE_STALE_SECONDS
+            while time.time() < deadline and not watched():
+                time.sleep(0.5)
+        if not watched():
+            raise RuntimeError("The owner's observer page is not open on this run, so there is no shared view to use. "
+                               "Ask the owner to open the observer page.")
         request_id = secrets.token_hex(4)
-        waiter = threading.Event()
-        result = {}
-        self.page_requests[request_id] = (waiter, result)
+        self.store.add_page_request(request_id, self.id)
         item = self.event("browser", request_id=request_id, action=action, payload=payload, status="pending")
         deadline = time.time() + PAGE_TIMEOUT_SECONDS
-        while not waiter.is_set() and not self.cancel.is_set() and time.time() < deadline:
-            waiter.wait(0.5)
-        self.page_requests.pop(request_id, None)
-        if not waiter.is_set():
+        answer = None
+        while not self.cancel.is_set() and time.time() < deadline:
+            answer = self.store.page_request(request_id)
+            if answer and answer["status"] == "done":
+                break
+            self.cancel.wait(0.15)
+        if not answer or answer["status"] != "done":
+            self.store.close_page_request(request_id, "stopped" if self.cancel.is_set() else "expired")
             self.update_event(item["seq"], status="stopped" if self.cancel.is_set() else "expired")
             raise RuntimeError("The owner stopped this run" if self.cancel.is_set() else "The owner's page did not answer within 15 minutes")
-        self.update_event(item["seq"], status="done" if result.get("ok") else "failed",
-                          summary=(result.get("result") or {}).get("summary"), done_at=utc_now(),
-                          summary_url=_screen_path((result.get("result") or {}).get("url")))
-        if not result.get("ok"):
-            raise RuntimeError((result.get("result") or {}).get("error") or "The page could not do that")
-        return result["result"]
+        result = answer["result"]
+        self.update_event(item["seq"], status="done" if answer["ok"] else "failed", summary=result.get("summary"),
+                          done_at=utc_now(), summary_url=_screen_path(result.get("url")))
+        if not answer["ok"]:
+            raise RuntimeError(result.get("error") or "The page could not do that")
+        return result
+
+    @property
+    def page_seen(self):
+        """When an observer page last polled this run."""
+        return self.store.page_watch(self.id)["seen"]
+
+    @page_seen.setter
+    def page_seen(self, when):
+        self.store.page_watched(self.id, seen=when)
 
     def page_result(self, request_id, ok, result):
-        pending = self.page_requests.get(request_id)
-        if pending is None or pending[0].is_set():
-            return False
-        pending[1].update({"ok": bool(ok), "result": result if isinstance(result, dict) else {}})
-        pending[0].set()
-        return True
+        return self.store.answer_page_request(self.id, request_id, ok, result)
 
     def control(self, action):
         """The owner paused, took over, or resumed the AI's use of the shared view."""
@@ -274,6 +288,7 @@ class Run:
         if text is None:
             return False
         self.record["paused"] = action != "resume"
+        self.store.page_watched(self.id, paused=action != "resume")
         self.event("control", action=action, text=text)
         return True
 
