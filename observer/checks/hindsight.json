@@ -36,5 +36,274 @@
    },
    "field": "version"
   }
+ },
+ {
+  "id": "hindsight-server-versions-true",
+  "ticket": 12,
+  "title": "Hindsight records each server's real Splunk version",
+  "shown": {
+   "what": "version in Hindsight's server inventory, per server",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "each": [
+     "p-mgmt",
+     "p-bravo",
+     "p-hq-cm",
+     "p-hq-idx1",
+     "p-hq-idx2",
+     "p-hq-idx3",
+     "p-hq-deployer",
+     "p-hq-sh1",
+     "p-hq-sh2",
+     "p-hq-sh3",
+     "p-alpha-cm",
+     "p-alpha-idx1",
+     "p-alpha-idx2",
+     "p-alpha-idx3",
+     "p-alpha-deployer",
+     "p-alpha-sh1",
+     "p-alpha-sh2",
+     "p-alpha-sh3"
+    ],
+    "query": "| inputlookup hindsight_server_inventory | search hostname=\"{each}\" | head 1 | fields version"
+   },
+   "field": "version"
+  },
+  "expected": {
+   "what": "version from each server's own splunkd server/info",
+   "search": {
+    "components": [
+     "p-mgmt",
+     "p-bravo",
+     "p-hq-cm",
+     "p-hq-idx1",
+     "p-hq-idx2",
+     "p-hq-idx3",
+     "p-hq-deployer",
+     "p-hq-sh1",
+     "p-hq-sh2",
+     "p-hq-sh3",
+     "p-alpha-cm",
+     "p-alpha-idx1",
+     "p-alpha-idx2",
+     "p-alpha-idx3",
+     "p-alpha-deployer",
+     "p-alpha-sh1",
+     "p-alpha-sh2",
+     "p-alpha-sh3"
+    ],
+    "query": "| rest splunk_server=local /services/server/info | eval guid=upper(guid) | fields version"
+   },
+   "field": "version"
+  },
+  "compare": "each_equal",
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_server_inventory"
+ },
+ {
+  "id": "hindsight-server-guids-true",
+  "ticket": 12,
+  "title": "Hindsight records each server under its real GUID",
+  "shown": {
+   "what": "guid in Hindsight's server inventory, per server",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "each": [
+     "p-mgmt",
+     "p-bravo",
+     "p-hq-cm",
+     "p-hq-idx1",
+     "p-hq-idx2",
+     "p-hq-idx3",
+     "p-hq-deployer",
+     "p-hq-sh1",
+     "p-hq-sh2",
+     "p-hq-sh3",
+     "p-alpha-cm",
+     "p-alpha-idx1",
+     "p-alpha-idx2",
+     "p-alpha-idx3",
+     "p-alpha-deployer",
+     "p-alpha-sh1",
+     "p-alpha-sh2",
+     "p-alpha-sh3"
+    ],
+    "query": "| inputlookup hindsight_server_inventory | search hostname=\"{each}\" | head 1 | eval guid=upper(guid) | fields guid"
+   },
+   "field": "guid"
+  },
+  "expected": {
+   "what": "guid from each server's own splunkd server/info",
+   "search": {
+    "components": [
+     "p-mgmt",
+     "p-bravo",
+     "p-hq-cm",
+     "p-hq-idx1",
+     "p-hq-idx2",
+     "p-hq-idx3",
+     "p-hq-deployer",
+     "p-hq-sh1",
+     "p-hq-sh2",
+     "p-hq-sh3",
+     "p-alpha-cm",
+     "p-alpha-idx1",
+     "p-alpha-idx2",
+     "p-alpha-idx3",
+     "p-alpha-deployer",
+     "p-alpha-sh1",
+     "p-alpha-sh2",
+     "p-alpha-sh3"
+    ],
+    "query": "| rest splunk_server=local /services/server/info | eval guid=upper(guid) | fields guid"
+   },
+   "field": "guid"
+  },
+  "compare": "each_equal",
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_server_inventory"
+ },
+ {
+  "id": "hindsight-servers-all-recorded",
+  "ticket": 12,
+  "title": "Hindsight's server inventory holds every search peer and the search head itself",
+  "shown": {
+   "what": "number of servers in Hindsight's server inventory",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "query": "| inputlookup hindsight_server_inventory | stats dc(guid) as value"
+   },
+   "field": "value"
+  },
+  "expected": {
+   "what": "p-mgmt's own distributed search peers, plus itself",
+   "search": {
+    "component": "p-mgmt",
+    "query": "| rest splunk_server=local count=0 /services/search/distributed/peers | stats dc(guid) as peers | eval value=peers+1 | fields value"
+   },
+   "field": "value"
+  },
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_server_inventory"
+ },
+ {
+  "id": "hindsight-forwarder-versions-true",
+  "ticket": 12,
+  "title": "Hindsight records each lab forwarder's real version",
+  "shown": {
+   "what": "version in Hindsight's forwarder inventory, per forwarder",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "each": [
+     "p-fwd-uf-9-0-10",
+     "p-fwd-uf-9-2-11",
+     "p-fwd-uf-9-2-12",
+     "p-fwd-uf-9-3-14",
+     "p-fwd-uf-9-4-3",
+     "p-fwd-uf-10-0-2",
+     "p-fwd-uf-10-4-4",
+     "p-fwd-uf-10-6-1-1",
+     "p-fwd-hf-10-2-4"
+    ],
+    "query": "| inputlookup hindsight_forwarder_inventory | search hostname=\"{each}\" | head 1 | fields version"
+   },
+   "field": "version"
+  },
+  "expected": {
+   "what": "the version tag of the image each forwarder container runs",
+   "image": [
+    "p-fwd-uf-9-0-10",
+    "p-fwd-uf-9-2-11",
+    "p-fwd-uf-9-2-12",
+    "p-fwd-uf-9-3-14",
+    "p-fwd-uf-9-4-3",
+    "p-fwd-uf-10-0-2",
+    "p-fwd-uf-10-4-4",
+    "p-fwd-uf-10-6-1-1",
+    "p-fwd-hf-10-2-4"
+   ]
+  },
+  "compare": "each_equal",
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_forwarder_inventory"
+ },
+ {
+  "id": "hindsight-upgrade-is-forward",
+  "ticket": 12,
+  "title": "No finding recommends an upgrade to a version the host already runs or has passed",
+  "shown": {
+   "what": "findings whose recommended upgrade is not newer than the host's version",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "query": "| inputlookup hindsight_findings | eval p=split(version,\".\") | eval vs=printf(\"%04d%04d%04d%04d\", tonumber(mvindex(p,0)), tonumber(coalesce(mvindex(p,1),\"0\")), tonumber(coalesce(mvindex(p,2),\"0\")), tonumber(coalesce(mvindex(p,3),\"0\"))) | where isnotnull(upgrade_sort) AND upgrade_sort!=\"\" AND upgrade_sort<=vs | stats count as value"
+   },
+   "field": "value"
+  },
+  "expected": {
+   "what": "the rule: an upgrade target is always a later version",
+   "value": 0
+  },
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_findings"
+ },
+ {
+  "id": "hindsight-app-version-pulse-spoke",
+  "ticket": 14,
+  "title": "Hindsight records the Pulse Spoke version Bravo really has installed",
+  "shown": {
+   "what": "version of federation_pulse_spoke on p-bravo in Hindsight's app inventory",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "query": "| inputlookup hindsight_app_inventory | search server=p-bravo app_id=federation_pulse_spoke | head 1 | fields version"
+   },
+   "field": "version"
+  },
+  "expected": {
+   "what": "version from p-bravo's own apps/local",
+   "search": {
+    "component": "p-bravo",
+    "query": "| rest splunk_server=local /services/apps/local/federation_pulse_spoke | fields version"
+   },
+   "field": "version"
+  },
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_app_inventory"
+ },
+ {
+  "id": "hindsight-app-version-pulse-hq",
+  "ticket": 14,
+  "title": "Hindsight records the Pulse HQ version the HQ search head really has installed",
+  "shown": {
+   "what": "version of federation_pulse_hq on p-hq-sh1 in Hindsight's app inventory",
+   "search": {
+    "component": "p-mgmt",
+    "app": "TA-hindsight",
+    "query": "| inputlookup hindsight_app_inventory | search server=p-hq-sh1 app_id=federation_pulse_hq | head 1 | fields version"
+   },
+   "field": "version"
+  },
+  "expected": {
+   "what": "version from p-hq-sh1's own apps/local",
+   "search": {
+    "component": "p-hq-sh1",
+    "query": "| rest splunk_server=local /services/apps/local/federation_pulse_hq | fields version"
+   },
+   "field": "version"
+  },
+  "app": "TA-hindsight",
+  "case": "normal",
+  "item": "kv:hindsight_app_inventory"
  }
 ]

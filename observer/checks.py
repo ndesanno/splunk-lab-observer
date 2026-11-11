@@ -14,11 +14,14 @@ the check unverified, never passed.
 
 A reading is one of:
   search     one search as lab_observer; "component" or "components" (one value each); "field" is
-             taken from the first result row
+             taken from the first result row. With "each": [names], the search runs once per name on
+             the one component, with {each} in the query replaced by the name (one value each)
   installed  the version and build of an installed app on every component that has it
+  image      the version tag of each named component's container image
   value      a fixed value an app rule requires
-compare is "equal" (every shown value equals the expected one) or "all_equal" (every shown value
-is the same; no expected reading).
+compare is "equal" (every shown value equals the expected one), "each_equal" (the shown and
+expected values are equal one by one, in order) or "all_equal" (every shown value is the same; no
+expected reading).
 """
 
 import json
@@ -36,6 +39,7 @@ CHANGING_COMMAND = re.compile(r"(?i)\|\s*(outputlookup|outputcsv|collect|mcollec
                               r"script|run|runshellscript|dbxoutput|tscollect|summaryindex|sichart|sitimechart|sistats|map)\b")
 # How often the scheduler runs a round; a result older than twice this is shown as stale.
 INTERVAL_SECONDS = 6 * 60 * 60
+COMPARES = {"equal", "each_equal", "all_equal"}
 CASES = {"normal", "empty", "incorrect", "permission", "error", "recovery"}
 
 
@@ -70,14 +74,14 @@ def _problem(item, seen):
         return "needs an id of lowercase letters, digits and dashes"
     if item["id"] in seen:
         return "duplicate id"
-    if not item.get("title") or item.get("compare", "equal") not in {"equal", "all_equal"}:
-        return "needs a title and compare of equal or all_equal"
+    if not item.get("title") or item.get("compare", "equal") not in COMPARES:
+        return f"needs a title and compare of one of {sorted(COMPARES)}"
     if item.get("case", "normal") not in CASES:
         return f"case must be one of {sorted(CASES)}"
-    readings = [item.get("shown")] + ([item.get("expected")] if item.get("compare", "equal") == "equal" else [])
+    readings = [item.get("shown")] + ([item.get("expected")] if item.get("compare", "equal") != "all_equal" else [])
     for reading in readings:
-        if not isinstance(reading, dict) or sum(key in reading for key in ("search", "installed", "value")) != 1:
-            return "each reading needs exactly one of search, installed or value"
+        if not isinstance(reading, dict) or sum(key in reading for key in ("search", "installed", "image", "value")) != 1:
+            return "each reading needs exactly one of search, installed, image or value"
         search = reading.get("search")
         if search is not None:
             if not isinstance(search, dict) or not search.get("query") or not (search.get("component") or search.get("components")):
@@ -86,6 +90,10 @@ def _problem(item, seen):
                 return "a check may only read: the search uses a command that writes or runs something"
             if not reading.get("field"):
                 return "a search reading needs the field to take"
+            each = search.get("each")
+            if each is not None and (not isinstance(each, list) or not each or "{each}" not in search["query"] or search.get("components")
+                                     or not all(re.fullmatch(r"[A-Za-z0-9._-]+", str(name)) for name in each)):
+                return "each needs a list of plain names, {each} in the query, and one component"
     return None
 
 
@@ -130,34 +138,47 @@ class Checks:
             if not values:
                 raise Unreadable(f"{app} is not installed anywhere")
             return list(values.values()), item["seq"]
+        if "image" in reading:
+            images = {item["name"]: item.get("image", "") for item in self.lab.source.containers()}
+            values = {name: images[name].rpartition(":")[2] for name in reading["image"] if ":" in images.get(name, "")}
+            missing = [name for name in reading["image"] if name not in values]
+            item = run.event("tool", name="check reading", input={"check": check["id"], "reading": label, "image_of": reading["image"]},
+                             source="podman: the image each container was started from", status="error" if missing else "ok",
+                             result=json.dumps(values, indent=1))
+            if missing:
+                raise Unreadable(f"no container image found for {', '.join(missing)}")
+            return [values[name] for name in reading["image"]], item["seq"]
         search = reading["search"]
-        components = search.get("components") or [search["component"]]
+        names = search.get("each")
+        components = [search["component"]] * len(names) if names else search.get("components") or [search["component"]]
         values, results, sources, failure = [], {}, [], None
-        for component in components:
+        for index, component in enumerate(components):
+            query = search["query"].replace("{each}", names[index]) if names else search["query"]
+            key = names[index] if names else component
             try:
-                rows, source = self.lab.source.splunk_search(component, search["query"], search.get("earliest", "-24h"),
+                rows, source = self.lab.source.splunk_search(component, query, search.get("earliest", "-24h"),
                                                              search.get("latest", "now"), 5, app=search.get("app"))
                 sources.append(source)
                 if not rows or reading["field"] not in rows[0]:
-                    failure = f"{component}: the search returned no {reading['field']!r}"
-                    results[component] = rows[:1]
+                    failure = f"{key}: the search returned no {reading['field']!r}"
+                    results[key] = rows[:1]
                     continue
                 values.append(rows[0][reading["field"]])
-                results[component] = {reading["field"]: rows[0][reading["field"]]}
+                results[key] = {reading["field"]: rows[0][reading["field"]]}
             except urllib.error.HTTPError as error:
                 detail = error.read().decode("utf-8", errors="replace")
                 try:
                     detail = "; ".join(message.get("text", "") for message in json.loads(detail).get("messages", [])) or detail
                 except ValueError:
                     pass
-                failure = f"{component}: HTTP {error.code}: {detail[:240]}"
-                results[component] = failure
+                failure = f"{key}: HTTP {error.code}: {detail[:240]}"
+                results[key] = failure
             except (OSError, ValueError) as error:
-                failure = f"{component}: {error.__class__.__name__}: {str(error)[:200]}"
-                results[component] = failure
+                failure = f"{key}: {error.__class__.__name__}: {str(error)[:200]}"
+                results[key] = failure
         item = run.event("tool", name="check reading",
                          input={"check": check["id"], "reading": label, "search": search["query"], "app": search.get("app"),
-                                "components": components, "field": reading["field"]},
+                                "components": sorted(set(components)), "each": names, "field": reading["field"]},
                          source="; ".join(sorted(set(sources))) or f"splunkd search as {getattr(self.lab.source, 'username', 'lab_observer')}",
                          status="error" if failure else "ok", result=json.dumps(results, indent=1))
         if failure:
@@ -177,7 +198,10 @@ class Checks:
             steps.append(step)
         except Unreadable as error:
             return "unverified", str(error), steps
-        agree = all(_same(value, expected[0]) for value in shown) and all(_same(value, expected[0]) for value in expected)
+        if check.get("compare") == "each_equal":
+            agree = len(shown) == len(expected) and all(_same(left, right) for left, right in zip(shown, expected))
+        else:
+            agree = all(_same(value, expected[0]) for value in shown) and all(_same(value, expected[0]) for value in expected)
         return ("pass" if agree else "fail"), f"shown {', '.join(map(str, shown))}; expected {', '.join(map(str, expected))}", steps
 
     # --- a round ----------------------------------------------------------------------
@@ -216,7 +240,6 @@ class Checks:
                 evidence += steps
                 outcome = run.event("check", check=check["id"], title=check["title"], result=result, detail=detail,
                                     evidence_steps=steps, ticket=check.get("ticket"))
-                self._mark(run, check, result, detail, steps)
                 before = results.get(check["id"]) or {}
                 changed = before.get("result") != result
                 # "since" is when the check first gave this result; "was" is what it gave before that.
@@ -225,6 +248,7 @@ class Checks:
                                         "since": outcome["at"] if changed else before.get("since") or before.get("at") or outcome["at"],
                                         "was": before.get("result") if changed else before.get("was")}
             self.store.put_setting("check_results", results)
+            self._mark_all(run, checks, results)
             verdict = "fail" if counts["fail"] else "inconclusive" if counts["unverified"] or not checks else "pass"
             run.record["verdict"] = {"verdict": verdict, "evidence_steps": evidence, "recorded_at": utc_now(),
                                      "summary": f"{counts['pass']} passed, {counts['fail']} failed, {counts['unverified']} could not be verified."}
@@ -234,6 +258,21 @@ class Checks:
         finally:
             self.status.update(running=False, finished_at=utc_now())
             self.lock.release()
+
+    def _mark_all(self, run, ran, results):
+        """One coverage mark per item and case the round touched. Several checks can stand for the same
+        case, so the mark is the worst of their latest results: a failure is never hidden by a pass."""
+        every, _problems = load_definitions(self.config_dir)
+        key = lambda check: (check.get("app"), check.get("item"), check.get("case", "normal"))  # noqa: E731
+        rank = {"fail": 0, "unverified": 1, "pass": 2}
+        for case in dict.fromkeys(key(check) for check in ran if check.get("app") and check.get("item")):
+            group = [check for check in every if key(check) == case and check["id"] in results]
+            worst = min(group, key=lambda check: rank[results[check["id"]]["result"]])
+            last = results[worst["id"]]
+            steps = [step for check in group if results[check["id"]]["run_id"] == run.id for step in results[check["id"]]["steps"]]
+            others = len(group) - 1
+            detail = last["detail"] + (f" ({others} other check(s) on this case)" if others else "")
+            self._mark(run, worst, last["result"], detail, steps or last["steps"])
 
     def _mark(self, run, check, result, detail, steps):
         """Mark the coverage case the check stands for, when it names an item of a configured app."""

@@ -4,7 +4,9 @@ The app tickets (#12 to #19) each ask whether what an app shows is true, and #20
 
 - A reading is one search as the read-only `lab_observer` account, the installed version and build of an app on every component, or a fixed value that an app rule requires.
 - The independent reading must not pass through the app under test. For Pulse it is Splunk's own index list, server GUID and member list; for Hindsight it is `server/info`. A check that compares an app's output with another view of the same app's output proves nothing and is not written.
-- The comparison is `equal` or `all_equal` (every member shows the same value).
+- A reading can also be the version tag of the image a container runs, which is how a forwarder's recorded version is checked without asking the forwarder. A search can be run once per named host, so one check covers every server.
+- The comparison is `equal`, `each_equal` (value by value, host by host) or `all_equal` (every member shows the same value).
+- Several checks can stand for the same coverage case. The case takes the worst of their latest results, so a pass never hides a failure.
 
 Checks ship as JSON under `observer/checks/` and the owner can add more in `checks.json` in the config directory. They are validated when loaded; a search that uses a command that writes or runs something (`outputlookup`, `collect`, `delete`, `sendalert`, `map` and the like) is refused and reported, and the account could not write in any case.
 
