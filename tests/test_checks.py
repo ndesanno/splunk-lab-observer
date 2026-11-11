@@ -63,6 +63,19 @@ class CheckRoundTest(ChecksFixture):
         self.assertEqual(run["verdict"]["verdict"], "fail")
         self.assertEqual(self.coverage.marks("TA-hindsight")[0]["verdict"], "fail")
 
+    def test_a_result_remembers_when_it_changed_and_what_it_was(self):
+        self.define(check())
+        self.round(["shown-count"])
+        first = self.checks.summary()["checks"][-1]["last"]
+        self.assertEqual((first["since"], first["was"]), (first["at"], None))
+        self.round(["shown-count"])
+        again = self.checks.summary()["checks"][-1]["last"]
+        self.assertEqual((again["since"], again["was"]), (first["at"], None))
+        self.source.answers[("p-sh1", "| rest")] = [{"value": "13"}]
+        self.round(["shown-count"])
+        failed = self.checks.summary()["checks"][-1]["last"]
+        self.assertEqual((failed["result"], failed["was"], failed["since"]), ("fail", "pass", failed["at"]))
+
     def test_a_reading_that_cannot_be_taken_is_unverified_never_passed(self):
         self.source.answers[("p-sh1", "savedsearch")] = urllib.error.HTTPError(
             "u", 403, "Forbidden", {}, io.BytesIO(b'{"messages": [{"text": "insufficient permission to access this resource"}]}'))

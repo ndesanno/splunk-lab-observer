@@ -855,6 +855,25 @@
       : reading.installed ? `installed version of ${reading.installed} on every component` : `fixed value ${JSON.stringify(reading.value)}`;
     return h('details', {}, h('summary', {}, reading.what || 'reading'), h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, how));
   }
+  // The milestone: every inventoried feature of every app, by the state of its cases. A gap means no full-coverage claim.
+  function renderMilestone() {
+    if (!coverage.data && !coverage.loading && !coverage.error) loadCoverage().then(() => { if (tab === 'checks') renderChecks(); });
+    if (!coverage.data) return h('div', {class: 'muted'}, coverage.error || 'Reading the coverage map…');
+    const keys = ['pass', 'fail', 'unverified', 'untested', 'n/a'];
+    const total = Object.fromEntries(keys.map(key => [key, 0]));
+    const rows = coverage.data.apps.map(app => {
+      for (const key of keys) total[key] += app.counts[key] || 0;
+      return h('tr', {}, h('td', {}, app.label), h('td', {}, String(app.items.length)), keys.map(key => h('td', {}, String(app.counts[key] || 0))));
+    });
+    const gaps = total.untested + total.unverified;
+    const cases = keys.reduce((sum, key) => sum + total[key], 0);
+    return h('details', {class: 'card', open: true}, h('summary', {}, h('strong', {}, 'Milestone coverage '),
+        gaps || total.fail || !cases ? h('span', {class: 'badge warn'}, 'not complete') : h('span', {class: 'badge ok'}, 'complete')),
+      h('p', {class: 'muted'}, !cases ? 'No app sources are configured, so nothing is inventoried.'
+        : gaps ? `Full coverage cannot be claimed: of ${cases} cases, ${total.untested} are untested and ${total.unverified} unverified${total.fail ? `, and ${total.fail} fail` : ''}.`
+        : total.fail ? `Every case has a result, and ${total.fail} fail.` : 'Every inventoried case has passed or is marked n/a.'),
+      h('table', {}, h('thead', {}, h('tr', {}, ['App', 'Features and screens', ...keys].map(text => h('th', {}, text)))), h('tbody', {}, rows)));
+  }
   function renderChecks() {
     const pane = panes.checks;
     if (!checks.data && !checks.loading && !checks.error) { loadChecks(); }
@@ -875,6 +894,10 @@
           name ? `${name} ${counts[name]}` : `All ${data.checks.length}`))));
       if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
         parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (for Federation Pulse: ./observer.sh app-roles in the lab checkout), then run them again.`));
+      const stale = 2 * (data.interval_seconds || 21600) * 1000;
+      const newFailures = data.checks.filter(check => check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
+      if (newFailures.length) parts.push(h('div', {class: 'notice'}, `New failure${newFailures.length > 1 ? 's' : ''}: ${newFailures.map(check => check.title).join('; ')}`));
+      parts.push(renderMilestone());
       const tickets = new Map();
       for (const check of data.checks) {
         if (checks.only && state(check) !== checks.only) continue;
@@ -886,9 +909,11 @@
         parts.push(h('table', {}, h('thead', {}, h('tr', {}, ['Check', 'Result', 'What was found', 'Checked', ''].map(text => h('th', {}, text)))),
           h('tbody', {}, group.map(check => h('tr', {},
             h('td', {}, h('div', {}, check.title), h('div', {class: 'muted'}, check.id, check.app ? ` · ${check.app}` : ''), readingText(check.shown), readingText(check.expected)),
-            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, state(check))),
+            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, state(check)),
+              check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < 2 * stale ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
+              check.last && check.last.since !== check.last.at ? h('div', {class: 'muted'}, 'since ', stamp(check.last.since)) : null),
             h('td', {style: 'word-break:break-word'}, check.last ? check.last.detail : ''),
-            h('td', {}, check.last ? [stamp(check.last.at), ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
+            h('td', {}, check.last ? [stamp(check.last.at), Date.now() - Date.parse(check.last.at) > stale ? h('span', {class: 'badge warn', style: 'margin-left:.3rem', title: 'Older than two scheduled rounds'}, 'stale') : null, ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
               onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(check.last.run_id); }}, `steps ${check.last.steps.map(seq => `#${seq}`).join(', ') || `#${check.last.step}`}`)] : ''),
             h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run')))))));
       }

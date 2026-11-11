@@ -34,6 +34,8 @@ PACKAGED = Path(__file__).with_name("checks")
 # Scheduled checks only read. The account cannot write either; this refuses the attempt outright.
 CHANGING_COMMAND = re.compile(r"(?i)\|\s*(outputlookup|outputcsv|collect|mcollect|meventcollect|delete|sendemail|sendalert|"
                               r"script|run|runshellscript|dbxoutput|tscollect|summaryindex|sichart|sitimechart|sistats|map)\b")
+# How often the scheduler runs a round; a result older than twice this is shown as stale.
+INTERVAL_SECONDS = 6 * 60 * 60
 CASES = {"normal", "empty", "incorrect", "permission", "error", "recovery"}
 
 
@@ -184,7 +186,8 @@ class Checks:
         checks, problems = load_definitions(self.config_dir)
         last = self.store.get_setting("check_results", {})
         return {"checks": [check | {"last": last.get(check["id"])} for check in checks], "problems": problems,
-                "status": dict(self.status), "account": getattr(self.lab.source, "username", "lab_observer")}
+                "status": dict(self.status), "account": getattr(self.lab.source, "username", "lab_observer"),
+                "interval_seconds": INTERVAL_SECONDS}
 
     def run_round(self, ids=None, reason="scheduled"):
         """Run every check (or the named ones) as one run. Returns the run id, or None if a round is already running."""
@@ -214,8 +217,13 @@ class Checks:
                 outcome = run.event("check", check=check["id"], title=check["title"], result=result, detail=detail,
                                     evidence_steps=steps, ticket=check.get("ticket"))
                 self._mark(run, check, result, detail, steps)
+                before = results.get(check["id"]) or {}
+                changed = before.get("result") != result
+                # "since" is when the check first gave this result; "was" is what it gave before that.
                 results[check["id"]] = {"result": result, "detail": detail, "at": outcome["at"], "run_id": run.id,
-                                        "steps": steps, "step": outcome["seq"]}
+                                        "steps": steps, "step": outcome["seq"],
+                                        "since": outcome["at"] if changed else before.get("since") or before.get("at") or outcome["at"],
+                                        "was": before.get("result") if changed else before.get("was")}
             self.store.put_setting("check_results", results)
             verdict = "fail" if counts["fail"] else "inconclusive" if counts["unverified"] or not checks else "pass"
             run.record["verdict"] = {"verdict": verdict, "evidence_steps": evidence, "recorded_at": utc_now(),

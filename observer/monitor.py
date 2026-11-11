@@ -11,14 +11,14 @@ import time
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
+# Read-only checks of what the apps report run on their own interval, without an AI model.
+from observer.checks import INTERVAL_SECONDS as CHECK_INTERVAL_SECONDS
 from observer.store import utc_now
 
 
 HEALTH_INTERVAL_SECONDS = 60
 DISCOVERY_INTERVAL_SECONDS = 300
 PRUNE_INTERVAL_SECONDS = 6 * 60 * 60
-# Read-only checks of what the apps report, run without an AI model.
-CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 FIRST_CHECK_AFTER_SECONDS = 10 * 60
 
 
