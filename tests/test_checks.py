@@ -104,6 +104,37 @@ class CheckRoundTest(ChecksFixture):
         _run, results = self.round(["members-agree"])
         self.assertEqual(results["members-agree"]["result"], "pass")
 
+    def test_one_value_per_named_host_is_compared_with_each_hosts_own(self):
+        shown = {"what": "recorded", "search": {"component": "p-sh1", "each": ["p-sh1", "p-sh2"], "query": "| inputlookup inv | search host={each}"}, "field": "v"}
+        expected = {"what": "own", "search": {"components": ["p-sh1", "p-sh2"], "query": "| makeresults own"}, "field": "v"}
+        self.source.answers.update({("p-sh1", "host=p-sh1"): [{"v": "10.2.4"}], ("p-sh1", "host=p-sh2"): [{"v": "9.4.3"}],
+                                    ("p-sh1", "makeresults own"): [{"v": "10.2.4"}], ("p-sh2", "makeresults own"): [{"v": "9.4.3"}]})
+        self.define(check(id="each-host", compare="each_equal", shown=shown, expected=expected))
+        _run, results = self.round(["each-host"])
+        self.assertEqual(results["each-host"]["result"], "pass")
+        self.source.answers[("p-sh2", "makeresults own")] = [{"v": "10.2.4"}]  # equal to the other host, not to its own record
+        _run, results = self.round(["each-host"])
+        self.assertEqual(results["each-host"]["result"], "fail")
+
+    def test_a_container_image_version_is_an_independent_reading(self):
+        shown = {"what": "recorded", "search": {"component": "p-sh1", "each": ["p-uf"], "query": "| inputlookup fwd | search host={each}"}, "field": "v"}
+        self.source.answers[("p-sh1", "host=p-uf")] = [{"v": "10.2.4"}]
+        self.define(check(id="fwd-version", compare="each_equal", shown=shown, expected={"what": "image", "image": ["p-uf"]}),
+                    check(id="fwd-missing", compare="each_equal", shown=shown, expected={"what": "image", "image": ["p-gone"]}))
+        _run, results = self.round(["fwd-version", "fwd-missing"])
+        self.assertEqual((results["fwd-version"]["result"], results["fwd-missing"]["result"]), ("pass", "unverified"))
+
+    def test_a_failure_on_a_case_is_not_hidden_by_another_check_that_passes(self):
+        failing = dict(EXPECTED, search=dict(EXPECTED["search"], query="| makeresults other"))
+        self.source.answers[("p-sh1", "makeresults other")] = [{"value": "99"}]
+        self.define(check(id="aa-fails", expected=failing), check(id="zz-passes"))
+        self.round(["aa-fails", "zz-passes"])
+        mark = self.coverage.marks("TA-hindsight")[0]
+        self.assertEqual((mark["verdict"], len(self.coverage.marks("TA-hindsight"))), ("fail", 1))
+        self.assertIn("aa-fails", mark["note"])
+        self.round(["zz-passes"])  # running only the passing one later still leaves the case failed
+        self.assertEqual(self.coverage.marks("TA-hindsight")[0]["verdict"], "fail")
+
     def test_a_check_that_would_write_is_refused_when_it_is_loaded(self):
         writing = dict(SHOWN, search=dict(SHOWN["search"], query="| makeresults | outputlookup x.csv"))
         self.define(check(shown=writing), check(id="no title", title=""))
