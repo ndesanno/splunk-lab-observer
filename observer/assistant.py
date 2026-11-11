@@ -296,6 +296,15 @@ class Assistant:
         self.operator = operator
         self.runs = {}  # live runs; finished runs are read back from the store
         self.lock = threading.Lock()
+        # A run this observer was working on when it last stopped has no worker any more. Say so,
+        # so it does not show as working for ever and can be continued. Terminal sessions belong
+        # to Claude Code's own process and are left alone.
+        for item in store.runs(limit=200):
+            if item["status"] in {"running", "waiting_for_approval"} and item["origin"] != "terminal":
+                run = Run(store, "", record=store.run(item["id"]))
+                run.event("error", text="The observer restarted while this run was working. Nothing further was done; "
+                                           "any change already approved is listed above.")
+                self._finish(run, "interrupted")
 
     def status(self):
         return {"sdk_available": anthropic is not None, "model": MODEL, "effort": EFFORT, **self.key.status(),

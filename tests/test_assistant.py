@@ -368,6 +368,19 @@ class TerminalSessionTest(unittest.TestCase):
     def assistant_key(self, server):
         server.assistant.key.save(KEY)
 
+    def test_a_run_cut_off_by_a_restart_is_marked_interrupted(self):
+        from observer.assistant import Run
+        cut = Run(self.store, "Restart the search head")
+        cut.event("prompt", text="Restart the search head")
+        cut.save()
+        self.terminal("start", "Terminal work")
+        terminal_id = next(item["id"] for item in self.store.runs() if item["origin"] == "terminal")
+        Assistant(self.lab, self.store, self.temp.name)  # the observer starts again
+        record = self.store.run(cut.id)
+        self.assertEqual(record["status"], "interrupted")
+        self.assertIn("restarted", record["events"][-1]["text"])
+        self.assertEqual(self.store.run(terminal_id)["status"], "running")
+
     def test_terminal_actions_run_in_the_owner_page_signed_in_as_the_test_account(self):
         import contextlib, io
         self.terminal("start", "Shared view")

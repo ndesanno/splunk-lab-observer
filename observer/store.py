@@ -53,23 +53,62 @@ class Store:
                     created_at TEXT NOT NULL, done_at TEXT);
                 CREATE TABLE IF NOT EXISTS page_watch (run_id TEXT PRIMARY KEY, seen REAL NOT NULL, paused INTEGER NOT NULL DEFAULT 0);
             """)
+            # An observation that repeats the one before it is not stored again; the stored row
+            # keeps when it was first seen (observed_at) and when it was last confirmed (seen_at).
+            if "seen_at" not in {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}:
+                self.db.execute("ALTER TABLE observations ADD COLUMN seen_at TEXT")
+                self.db.execute("ALTER TABLE observations ADD COLUMN seen_epoch REAL")
+                self.db.execute("UPDATE observations SET seen_at = observed_at, seen_epoch = epoch")
+                self._merge_repeats()
+
+    def _merge_repeats(self):
+        """One-time tidy of a store written before repeats were merged: keep the first row of each
+        unbroken run of identical observations and give it the last row's confirmation time."""
+        keep = None  # (id, component, kind, source, value)
+        last = None  # (seen_at, seen_epoch) of the newest repeat of keep
+        extend, drop = [], []
+        rows = self.db.execute("SELECT id, component, kind, source, value, observed_at, epoch FROM observations ORDER BY component, kind, epoch, id")
+        for row in rows.fetchall():
+            if keep and keep[1:] == (row["component"], row["kind"], row["source"], row["value"]):
+                drop.append((row["id"],))
+                last = (row["observed_at"], row["epoch"])
+                continue
+            if keep and last:
+                extend.append((*last, keep[0]))
+            keep, last = (row["id"], row["component"], row["kind"], row["source"], row["value"]), None
+        if keep and last:
+            extend.append((*last, keep[0]))
+        self.db.executemany("UPDATE observations SET seen_at = ?, seen_epoch = ? WHERE id = ?", extend)
+        # A change points at the observation that showed it, which is always the first of its run.
+        linked = {row[0] for row in self.db.execute("SELECT observation_id FROM changes WHERE observation_id IS NOT NULL")}
+        self.db.executemany("DELETE FROM observations WHERE id = ?", [item for item in drop if item[0] not in linked])
 
     def record(self, component, kind, source, value, signals=None, observed_at=None):
         """Store one observation. Each signal (a short status such as "health") that differs
         from its last recorded value also produces a change linked to this observation."""
         observed_at = observed_at or utc_now()
         epoch = datetime.fromisoformat(observed_at.replace("Z", "+00:00")).timestamp()
+        text = json.dumps(value, sort_keys=True)
         with self.lock, self.db:
-            cursor = self.db.execute(
-                "INSERT INTO observations (component, kind, observed_at, epoch, source, value) VALUES (?, ?, ?, ?, ?, ?)",
-                (component, kind, observed_at, epoch, source, json.dumps(value, sort_keys=True)))
-            observation_id = cursor.lastrowid
+            changed = []
             for signal, current in (signals or {}).items():
                 current = None if current is None else str(current)
                 row = self.db.execute("SELECT value FROM signals WHERE component = ? AND signal = ?",
                                       (component, signal)).fetchone()
-                if row is not None and row["value"] == current:
-                    continue
+                if row is None or row["value"] != current:
+                    changed.append((signal, current, row))
+            previous = self.db.execute(
+                "SELECT id, source, value, seen_epoch FROM observations WHERE component = ? AND kind = ? ORDER BY epoch DESC, id DESC LIMIT 1",
+                (component, kind)).fetchone()
+            if previous and not changed and previous["value"] == text and previous["source"] == source and epoch >= previous["seen_epoch"]:
+                self.db.execute("UPDATE observations SET seen_at = ?, seen_epoch = ? WHERE id = ?", (observed_at, epoch, previous["id"]))
+                self.version += 1
+                return previous["id"]
+            cursor = self.db.execute(
+                "INSERT INTO observations (component, kind, observed_at, epoch, source, value, seen_at, seen_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (component, kind, observed_at, epoch, source, text, observed_at, epoch))
+            observation_id = cursor.lastrowid
+            for signal, current, row in changed:
                 self.db.execute("INSERT OR REPLACE INTO signals (component, signal, value) VALUES (?, ?, ?)",
                                 (component, signal, current))
                 self.db.execute(
@@ -96,7 +135,7 @@ class Store:
             row = self.db.execute(
                 "SELECT * FROM observations WHERE component = ? AND kind = ? AND epoch <= ? ORDER BY epoch DESC, id DESC LIMIT 1",
                 (component, kind, epoch)).fetchone()
-        return self._observation(row) if row else None
+        return self._observation(row, at=epoch) if row else None
 
     def latest_capture_before(self, component, epoch):
         """The newest successful preview at or before a time."""
@@ -136,7 +175,7 @@ class Store:
         """Drop observations and unpinned runs (with their evidence files) older than the retention period."""
         cutoff = (now or time.time()) - RETENTION_SECONDS
         with self.lock, self.db:
-            self.db.execute("DELETE FROM observations WHERE epoch < ?", (cutoff,))
+            self.db.execute("DELETE FROM observations WHERE seen_epoch < ?", (cutoff,))
             self.db.execute("DELETE FROM changes WHERE epoch < ?", (cutoff,))
             expired = [row["id"] for row in self.db.execute(
                 "SELECT id FROM runs WHERE epoch < ? AND coalesce(json_extract(record, '$.pinned'), 0) = 0", (cutoff,))]
@@ -223,6 +262,11 @@ class Store:
             self.version += 1
 
     @staticmethod
-    def _observation(row):
-        return {"id": row["id"], "component": row["component"], "kind": row["kind"],
-                "observed_at": row["observed_at"], "source": row["source"], "value": json.loads(row["value"])}
+    def _observation(row, at=None):
+        """observed_at is when the value was last confirmed (at a past moment `at`: no later than
+        that moment); since is when it was first seen."""
+        confirmed = row["seen_at"]
+        if at is not None and row["seen_epoch"] > at:
+            confirmed = datetime.fromtimestamp(at, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return {"id": row["id"], "component": row["component"], "kind": row["kind"], "observed_at": confirmed,
+                "since": row["observed_at"], "source": row["source"], "value": json.loads(row["value"])}
