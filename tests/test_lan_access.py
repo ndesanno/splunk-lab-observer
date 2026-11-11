@@ -129,6 +129,13 @@ class LanAccessTest(unittest.TestCase):
         self.assertEqual(os.stat(self.credentials["auth_file"]).st_mode & 0o077, 0)
         self.assertEqual(os.stat(self.credentials["password_file"]).st_mode & 0o077, 0)
 
+    def test_service_unit_runs_this_checkout_with_the_chosen_address(self):
+        from observer.service import unit_text
+        text = unit_text(Path("/opt/venv/bin/python"), Path("/srv/observer"), ["--port", "8766", "--lan-address", "192.168.3.86"])
+        self.assertIn("ExecStart=/opt/venv/bin/python -m observer.server --port 8766 --lan-address 192.168.3.86\n", text)
+        self.assertIn("WorkingDirectory=/srv/observer\n", text)
+        self.assertIn("Restart=on-failure", text)
+
     def test_provisioning_refuses_a_git_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory)
