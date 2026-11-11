@@ -98,12 +98,16 @@ class PodmanSplunkSource:
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response), source
 
-    def splunk_search(self, component, query, earliest, latest, max_count):
-        """A blocking one-shot search as the read-only account; returns result rows."""
-        source = f"splunkd {component}/services/search/jobs (oneshot) as {self.username}"
+    def splunk_search(self, component, query, earliest, latest, max_count, app=None):
+        """A blocking one-shot search as the read-only account; returns result rows. With app, the
+        search runs in that app, where the app's own saved searches and macros are found."""
+        if app is not None and not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", app):
+            raise ValueError("invalid app")
+        endpoint = f"/servicesNS/{self.username}/{app}/search/jobs" if app else "/services/search/jobs"
+        source = f"splunkd {component}{endpoint} (oneshot) as {self.username}"
         body = urllib.parse.urlencode({"search": query, "exec_mode": "oneshot", "earliest_time": earliest,
                                        "latest_time": latest, "count": max_count, "output_mode": "json"}).encode()
-        request = urllib.request.Request(f"{self.router}/mgmt/{component}/services/search/jobs", data=body,
+        request = urllib.request.Request(f"{self.router}/mgmt/{component}{endpoint}", data=body,
                                          headers={"Authorization": self._authorization})
         with urllib.request.urlopen(request, timeout=90) as response:
             return json.load(response).get("results", []), source

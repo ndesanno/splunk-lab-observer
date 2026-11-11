@@ -184,3 +184,23 @@ Suggested shape for stories 24, 30 and 38 together: a **check** is data, not a c
 - State-changing actions on the lab need the owner's approval and a cleanup. Do not merge pull requests without the owner's say.
 - Leave the old listener on port 8765 alone.
 - Mirror lab work into the observer with `observer.terminal`, record only real results, and test in the owner's view as `lab_operator`.
+
+## 10. What was done after this review (2026-11-11)
+
+| Finding | Done | Not done |
+| --- | --- | --- |
+| 3.1 web server | HTTP/1.1 keep-alive, pooled upstream connections, chunked passthrough, handshake off the accept loop, queue of 128, gzip, ETag and 304, cached lab summary. New TLS connections per Splunk page went from 55 to 85 down to 0. | Route table; replacing the server (ADR 0006 records why it stays). |
+| 3.2 page tests | `tests/test_page.py` drives the page in the capture browser image. | Splitting `view.html` into files. |
+| 3.3 reading | The shared view sends visible text only. | An allow-list of regions. |
+| 3.4 same origin | ADR 0006 records it as an accepted risk for this lab. | |
+| 3.5 two page-request paths | | Still two implementations. |
+| 3.6 run records | Runs left running are marked interrupted at startup. | Events as rows. |
+| 3.7 store | Unchanged observations update one row; a one-time merge took the live database from about 300,000 rows to 79,700; WAL. | |
+| 3.8 startup | `python -m observer.service install` writes a systemd user service; the live observer runs from it. | Start at boot needs the owner to run `sudo loginctl enable-linger "$USER"`. |
+| 3.9 polling | The lab summary is fetched conditionally. | Server-sent events. |
+| 3.10 previews | | Thumbnails. |
+| Section 4 usability | Focus a live tile in place, remembered screen per component, path with back and reload, deep links, one button to sign in every live view, caching-off notice. | |
+| Section 6 checks | ADR 0007, glossary terms, the check engine, 19 packaged checks, the Checks tab and the six-hour schedule (#20). | Saved workflows (stories 30, 31) and fixtures (33, 34). |
+
+First real round, 2026-11-11 16:02 UTC, run `bf18c6a8c763`: 3 passed (Hindsight, Pulse Spoke and Pulse HQ each run one version and build everywhere), 0 failed, 16 unverified. Fifteen are unverified because `lab_observer` cannot see the Pulse apps' saved searches ("Unable to find saved search"); the apps ship read-only auditor roles for this and the owner has not yet granted them. One (`hindsight-own-version-recorded`) returned no row and has not been diagnosed; Hindsight has no reader role below `power`. So #15 to #19 have their checks written and are not yet verified, and #12 is partly verified. `hq-registry-alpha-identity` is expected to fail once readable, because the registry still keys Alpha to one member's GUID.
+

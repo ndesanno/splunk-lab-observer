@@ -41,7 +41,7 @@ class ObserverServer(ThreadingHTTPServer):
     # A Splunk page asks for dozens of files at once and a wall holds several pages.
     request_queue_size = 128
 
-    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None):
+    def __init__(self, address, upstream_url, auth_file=None, certfile=None, keyfile=None, lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None, checks=None):
         secure_mode = any(item is not None for item in (auth_file, certfile, keyfile))
         if secure_mode and not all(item is not None for item in (auth_file, certfile, keyfile)):
             raise ValueError("LAN mode requires authentication, certificate, and private key files")
@@ -68,6 +68,7 @@ class ObserverServer(ThreadingHTTPServer):
         self.allowed_hosts = {address[0]} if secure_mode else {"127.0.0.1", "localhost"}
         self.lab, self.store, self.capture, self.monitor, self.assistant = lab, store, capture, monitor, assistant
         self.coverage = coverage
+        self.checks = checks
         self.tls_context = context
         self.summary_cache = (None, None)  # (store version and background status, summary)
         super().__init__(address, ObserverHandler)
@@ -300,6 +301,19 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(error)})
                 return
             self._json(200, {"status": status})
+        elif parts == ["api", "checks"] and get and self.server.checks:
+            self._json(200, self.server.checks.summary())
+        elif parts == ["api", "checks", "run"] and post and self.server.checks:
+            body = self._read_json()
+            if body is None:
+                return
+            ids = [str(item) for item in body.get("ids") or []][:200] or None
+            if self.server.checks.status["running"]:
+                self._json(409, {"error": "A round of checks is already running"})
+                return
+            threading.Thread(target=self._background, args=(lambda: self.server.checks.run_round(ids, reason="asked for by the owner"),),
+                             daemon=True).start()
+            self._json(202, {"started": True})
         elif parts[:2] == ["api", "assistant"] and self.server.assistant:
             self._assistant_route(parts[2:], query, get, post)
         elif len(parts) == 3 and parts[:2] == ["api", "packages"] and get:
@@ -729,14 +743,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
 
 def create_server(address=("127.0.0.1", 8765), router_url="http://127.0.0.1:8190", *, auth_file=None, certfile=None, keyfile=None,
-                  lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None):
+                  lab=None, store=None, capture=None, monitor=None, assistant=None, coverage=None, checks=None):
     return ObserverServer(address, router_url, auth_file=auth_file, certfile=certfile, keyfile=keyfile,
-                          lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage)
+                          lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage, checks=checks)
 
 
 def main():
     from observer.assistant import Assistant
     from observer.capture import Capture
+    from observer.checks import Checks
     from observer.coverage import Coverage
     from observer.lab import DEFAULT_SPLUNK_CONFIG, Lab, OperatorAccount, PodmanSplunkSource
     from observer.monitor import Monitor
@@ -762,7 +777,9 @@ def main():
     operator = OperatorAccount(operator_file) if operator_file.exists() else None
     coverage = Coverage(store, lab, args.config_dir)
     assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture, coverage)
-    options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage)
+    checks = Checks(lab, store, coverage, args.config_dir, assistant.lab_state)
+    monitor.checks = checks
+    options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage, checks=checks)
     if args.lan_address:
         address = private_lan_address(args.lan_address)
         server = create_server(

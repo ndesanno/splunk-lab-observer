@@ -1,0 +1,40 @@
+[
+ {
+  "id": "hindsight-versions-agree",
+  "ticket": 12,
+  "app": "TA-hindsight",
+  "item": "screen:hindsight_overview",
+  "case": "normal",
+  "title": "Every instance with Hindsight runs the same version and build",
+  "compare": "all_equal",
+  "shown": {
+   "what": "Installed version and build of Hindsight on each component",
+   "installed": "TA-hindsight"
+  }
+ },
+ {
+  "id": "hindsight-own-version-recorded",
+  "ticket": 12,
+  "app": "TA-hindsight",
+  "item": "kv:hindsight_server_inventory",
+  "case": "normal",
+  "title": "Hindsight's server inventory holds the version this search head really runs",
+  "shown": {
+   "what": "version recorded for p-mgmt's own GUID in Hindsight's server inventory",
+   "search": {
+    "component": "p-mgmt",
+    "query": "| inputlookup hindsight_server_inventory | eval g=lower(guid) | join type=inner g [| rest splunk_server=local /services/server/info | eval g=lower(guid) | fields g] | head 1 | fields version",
+    "app": "TA-hindsight"
+   },
+   "field": "version"
+  },
+  "expected": {
+   "what": "version from splunkd server/info on p-mgmt",
+   "search": {
+    "component": "p-mgmt",
+    "query": "| rest splunk_server=local /services/server/info | fields version"
+   },
+   "field": "version"
+  }
+ }
+]

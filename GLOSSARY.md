@@ -42,3 +42,15 @@ The exact text a tool returned to the hosted AI model during a run, kept with th
 
 **Coverage mark**:
 The recorded status of one case (normal, empty, incorrect, permission, error, recovery) of one app feature or screen. It counts as tested only with a pass or fail verdict and the run steps that show it.
+
+**Check**:
+A stored comparison between what an app shows and an independent reading of the same fact, run by the observer with the read-only account and without an AI model. Its result is pass, fail or unverified.
+
+**Reading**:
+One value taken for a check: a search result, an installed version, or a fixed value an app rule requires. Each reading is a step of the round's run.
+
+**Independent reading**:
+The reading a check compares against. It comes from Splunk itself and never passes through the app under test.
+
+**Round**:
+One run of every check, or of the checks the owner picked. It is kept as a run with origin `check`.

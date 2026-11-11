@@ -162,6 +162,7 @@
     <button role="tab" data-tab="wall" aria-selected="true">Wall</button>
     <button role="tab" data-tab="architecture" aria-selected="false">Architecture</button>
     <button role="tab" data-tab="coverage" aria-selected="false">Coverage</button>
+    <button role="tab" data-tab="checks" aria-selected="false">Checks</button>
     <button role="tab" data-tab="overview" aria-selected="false">Overview</button>
     <button role="tab" data-tab="changes" aria-selected="false">Changes</button>
   </nav>
@@ -393,12 +394,12 @@
   // The wall stays in the page while other tabs show, and its tiles are never moved in the
   // document: moving an iframe reloads it, so order comes from CSS and only headers,
   // previews, and footers are rebuilt on refresh.
-  const panes = {wall: h('div', {}), architecture: h('div', {hidden: true}), coverage: h('div', {hidden: true}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
+  const panes = {wall: h('div', {}), architecture: h('div', {hidden: true}), coverage: h('div', {hidden: true}), checks: h('div', {hidden: true}), overview: h('div', {hidden: true}), changes: h('div', {hidden: true})};
   const wallTop = h('div', {});
   const grid = h('div', {class: 'wall'});
   const tileNodes = new Map();  // component id -> {node, live}
   panes.wall.append(wallTop, grid);
-  document.getElementById('main').append(panes.wall, panes.architecture, panes.coverage, panes.overview, panes.changes);
+  document.getElementById('main').append(panes.wall, panes.architecture, panes.coverage, panes.checks, panes.overview, panes.changes);
 
   // The focused view and tab are kept in the address, so a reload or a bookmark comes back to them.
   function writeAddress() {
@@ -423,6 +424,7 @@
     renderWall();
     if (tab === 'architecture') { panes.architecture.replaceChildren(renderArchitecture()); requestAnimationFrame(drawArchitectureLinks); }
     if (tab === 'coverage') renderCoverage();
+    if (tab === 'checks') renderChecks();
     if (tab === 'overview') panes.overview.replaceChildren(renderOverview());
     if (tab === 'changes') panes.changes.replaceChildren(renderChanges());
     renderFocus();
@@ -830,6 +832,71 @@
           catch (error) { coverage.error = error.message; renderCoverage(); }
         }}, 'Save'))));
   }
+  // Checks: what an app shows against an independent reading, run by the observer without an AI model.
+  const checks = {data: null, loading: false, error: null, timer: null, only: ''};
+  async function loadChecks() {
+    clearTimeout(checks.timer);
+    checks.loading = !checks.data;
+    try { checks.data = await api('/observer/api/checks'); checks.error = null; }
+    catch (error) { checks.error = error.message; }
+    checks.loading = false;
+    if (tab !== 'checks') return;
+    renderChecks();
+    if (checks.data && checks.data.status.running) checks.timer = setTimeout(loadChecks, 2000);
+  }
+  async function runChecks(ids) {
+    try { await post('/observer/api/checks/run', ids ? {ids} : {}); checks.error = null; }
+    catch (error) { checks.error = error.message; }
+    loadChecks();
+  }
+  function readingText(reading) {
+    if (!reading) return null;
+    const how = reading.search ? `search on ${(reading.search.components || [reading.search.component]).join(', ')}${reading.search.app ? ` in ${reading.search.app}` : ''}: ${reading.search.query}`
+      : reading.installed ? `installed version of ${reading.installed} on every component` : `fixed value ${JSON.stringify(reading.value)}`;
+    return h('details', {}, h('summary', {}, reading.what || 'reading'), h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, how));
+  }
+  function renderChecks() {
+    const pane = panes.checks;
+    if (!checks.data && !checks.loading && !checks.error) { loadChecks(); }
+    const data = checks.data;
+    const running = Boolean(data && data.status.running);
+    const parts = [h('p', {class: 'muted'}, 'Each check compares what an app shows with an independent reading of the same fact. The observer runs them itself',
+      data ? ` as ${data.account}` : '', ', read-only and without an AI model, about every six hours. A reading that cannot be taken leaves the check unverified, never passed. ',
+      h('button', {class: 'small primary', type: 'button', disabled: running || !data, onclick: () => runChecks()}, running ? 'Running…' : 'Run all now'))];
+    if (checks.error) parts.push(h('div', {class: 'notice'}, checks.error));
+    if (data) {
+      for (const problem of data.problems) parts.push(h('div', {class: 'notice'}, `Check definition skipped: ${problem}`));
+      const state = check => check.last ? check.last.result : 'not run';
+      const counts = {pass: 0, fail: 0, unverified: 0, 'not run': 0};
+      for (const check of data.checks) counts[state(check)] += 1;
+      const tone = {pass: 'ok', fail: 'bad', unverified: 'warn', 'not run': ''};
+      parts.push(h('div', {class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.4rem 0'}, ['', 'fail', 'unverified', 'pass', 'not run'].map(name =>
+        h('button', {class: 'small', type: 'button', 'aria-pressed': String(checks.only === name), onclick: () => { checks.only = name; renderChecks(); }},
+          name ? `${name} ${counts[name]}` : `All ${data.checks.length}`))));
+      if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
+        parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (for Federation Pulse: ./observer.sh app-roles in the lab checkout), then run them again.`));
+      const tickets = new Map();
+      for (const check of data.checks) {
+        if (checks.only && state(check) !== checks.only) continue;
+        const key = check.ticket ? `Ticket ${String(check.ticket).padStart(2, '0')}` : 'Other';
+        tickets.set(key, [...(tickets.get(key) || []), check]);
+      }
+      for (const [name, group] of [...tickets].sort((a, b) => a[0].localeCompare(b[0]))) {
+        parts.push(h('h3', {}, name, ' ', h('span', {class: 'muted', style: 'font-weight:normal'}, `${group.filter(check => state(check) === 'pass').length} of ${group.length} passing`)));
+        parts.push(h('table', {}, h('thead', {}, h('tr', {}, ['Check', 'Result', 'What was found', 'Checked', ''].map(text => h('th', {}, text)))),
+          h('tbody', {}, group.map(check => h('tr', {},
+            h('td', {}, h('div', {}, check.title), h('div', {class: 'muted'}, check.id, check.app ? ` · ${check.app}` : ''), readingText(check.shown), readingText(check.expected)),
+            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, state(check))),
+            h('td', {style: 'word-break:break-word'}, check.last ? check.last.detail : ''),
+            h('td', {}, check.last ? [stamp(check.last.at), ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
+              onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(check.last.run_id); }}, `steps ${check.last.steps.map(seq => `#${seq}`).join(', ') || `#${check.last.step}`}`)] : ''),
+            h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run')))))));
+      }
+      if (!data.checks.length) parts.push(h('div', {class: 'notice'}, 'No checks are defined.'));
+    } else if (checks.loading) parts.push(h('div', {class: 'muted'}, 'Loading…'));
+    pane.replaceChildren(...parts);
+  }
+
   function renderCoverage() {
     const pane = panes.coverage;
     const parts = [h('p', {class: 'muted'}, 'Each app’s screens and features, read from its source at the version installed in the lab, against six cases. Pass and fail come from test runs and link to the steps that show them. ',
@@ -1140,7 +1207,8 @@
   // A live run is still adding steps; only an in-page run occupies the prompt (a terminal session runs beside it).
   const liveRun = () => assistant.run && ['running', 'waiting_for_approval'].includes(assistant.run.status);
   const terminalRun = () => assistant.run && assistant.run.origin === 'terminal';
-  const activeRun = () => liveRun() && !terminalRun();
+  const checkRun = () => assistant.run && assistant.run.origin === 'check';
+  const activeRun = () => liveRun() && !terminalRun() && !checkRun();
   const pageOpenedAt = Date.now();
   const followed = new Set();
 
@@ -1174,7 +1242,7 @@
   async function followLive() {
     try {
       const {latest} = await api('/observer/api/assistant/live');
-      if (!latest || latest.status !== 'running' || followed.has(latest.id) || activeRun()) return;
+      if (!latest || latest.status !== 'running' || latest.origin === 'check' || followed.has(latest.id) || activeRun()) return;
       if (assistant.run && assistant.run.id === latest.id) return;
       // A session left running before this page opened is not followed until it does something new.
       if (Date.parse(latest.updated_at) < pageOpenedAt - 60000) return;
@@ -1408,7 +1476,7 @@
     if (!text || assistant.busy) return;
     assistant.busy = true; assistant.error = null; renderAssistant();
     try {
-      const continuing = assistant.run && !activeRun() && !terminalRun();
+      const continuing = assistant.run && !activeRun() && !terminalRun() && !checkRun();
       const result = continuing
         ? await postWithReason(`/observer/api/assistant/runs/${encodeURIComponent(assistant.run.id)}/messages`, {prompt: text})
         : await postWithReason('/observer/api/assistant/runs', {prompt: text});
@@ -1487,6 +1555,12 @@
           h('span', {class: `badge ${tone}`}, waiting ? 'waiting for you' : item.status), time),
           h('div', {class: 'muted'}, `${payload.component}${payload.why ? ` · ${payload.why}` : ''}`),
           item.summary ? h('div', {class: 'fact-source'}, item.summary) : null);
+      }
+      case 'check': {
+        const tone = {pass: 'ok', fail: 'bad', unverified: 'warn'}[item.result] || '';
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ ${item.title}`), h('span', {class: `badge ${tone}`}, item.result), time),
+          h('div', {class: 'muted'}, item.detail),
+          item.evidence_steps?.length ? h('div', {class: 'fact-source'}, `Steps ${item.evidence_steps.map(seq => `#${seq}`).join(', ')} · ${item.check}`) : null);
       }
       case 'coverage': {
         const tone = {pass: 'ok', fail: 'bad', unverified: 'warn'}[item.result] || '';
@@ -1580,14 +1654,14 @@
     const tokens = usage.reduce((sum, item) => [sum[0] + (item.input_tokens || 0), sum[1] + (item.output_tokens || 0)], [0, 0]);
     const runPicker = h('select', {'aria-label': 'Conversation', onchange: event => selectRun(event.target.value || null)},
       h('option', {value: '', selected: !run}, 'New conversation'),
-      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${item.pinned ? '📌 ' : ''}${item.origin === 'terminal' ? '⌨ ' : ''}${item.verdict ? `[${item.verdict}] ` : ''}${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
+      assistant.runs.map(item => h('option', {value: item.id, selected: run && run.id === item.id}, `${item.pinned ? '📌 ' : ''}${item.origin === 'terminal' ? '⌨ ' : item.origin === 'check' ? '☑ ' : ''}${item.verdict ? `[${item.verdict}] ` : ''}${new Date(item.created_at).toLocaleString()} · ${item.title.slice(0, 50)}`)));
     assistantHead.replaceChildren(
       h('div', {class: 'row'}, h('strong', {style: 'flex:1'}, 'Claude'),
         status ? h('span', {class: 'muted', style: 'font-size:.75rem'}, `${status.model} · effort ${status.effort}`) : null,
         h('button', {class: 'small', type: 'button', onclick: () => setAssistantOpen(false)}, 'Close')),
       runPicker,
       h('div', {class: 'muted', style: 'font-size:.75rem'},
-        terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC; you approve its changes there. This page follows a live session: Claude Code signs your focused view in as the test account and reads and clicks in it, each element highlighted. Pause or Take over holds its next action.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
+        checkRun() ? 'A round of checks the observer ran itself, read-only and without an AI model. Each reading is a step; each result names the steps it rests on.' : terminalRun() ? `Claude Code ${liveRun() ? 'working' : 'session'} from the terminal on the lab PC; you approve its changes there. This page follows a live session: Claude Code signs your focused view in as the test account and reads and clicks in it, each element highlighted. Pause or Take over holds its next action.` : status ? `Reads the lab as ${status.read_account || 'the observer account'}${status.change_account ? `, changes Splunk as ${status.change_account}` : ''}; every change waits for your approval. Open “Evidence sent to Claude” on any step to see exactly what left this workstation.` : '',
         run ? ` · Run ${run.id}, ${run.status.replaceAll('_', ' ')}${usage.length ? `, ${tokens[0].toLocaleString()} in / ${tokens[1].toLocaleString()} out tokens` : ''}` : ''));
     if (run && liveRun()) assistantHead.append(h('div', {class: 'row'},
       pageRun.paused
@@ -1602,7 +1676,7 @@
       if (node) { node.dataset.seq = item.seq; node.title = node.title || `Step #${item.seq}`; }
       return node;
     }).filter(Boolean);
-    if (liveRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, terminalRun() ? 'Claude Code is working in the terminal…' : 'Claude is working…'));
+    if (liveRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, checkRun() ? 'Checks are running…' : terminalRun() ? 'Claude Code is working in the terminal…' : 'Claude is working…'));
     if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is p-hq-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
     trail.replaceChildren(...steps);
     if (nearBottom) trail.scrollTop = trail.scrollHeight;
@@ -1615,7 +1689,7 @@
         keyInput, h('div', {class: 'row', style: 'margin-top:.4rem'}, h('button', {class: 'primary', type: 'button', onclick: () => saveKey(keyInput.value)}, 'Save key'))));
     } else if (status) {
       parts.push(promptInput, h('div', {class: 'row'},
-        h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() && !terminalRun() ? 'Send follow-up' : 'Send'),
+        h('button', {class: 'primary', type: 'button', disabled: assistant.busy || activeRun(), onclick: sendPrompt}, run && !activeRun() && !terminalRun() && !checkRun() ? 'Send follow-up' : 'Send'),
         activeRun() ? h('button', {class: 'danger', type: 'button', onclick: async () => { await post(`/observer/api/assistant/runs/${encodeURIComponent(run.id)}/stop`); fetchRun(run.id); }}, 'Stop') : null,
         h('span', {class: 'muted', style: 'font-size:.75rem;flex:1'}, '⌘/Ctrl + Enter to send'),
         h('button', {class: 'small', type: 'button', title: `Key ${status.hint || ''} from ${status.source || ''}`, onclick: () => { if (confirm('Remove the saved Anthropic API key from the lab PC?')) saveKey(''); }}, 'Remove key')));

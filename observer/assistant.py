@@ -340,6 +340,8 @@ class Assistant:
                     raise KeyError(run_id)
                 if run.record.get("origin") == "terminal":
                     raise RuntimeError("A Claude Code terminal session cannot be continued here; start a new conversation")
+                if run.record.get("origin") == "check":
+                    raise RuntimeError("A round of checks cannot be continued; start a new conversation about it")
                 if run.record["status"] in {"running", "waiting_for_approval"}:
                     raise RuntimeError("This run is still working")
                 run.cancel.clear()

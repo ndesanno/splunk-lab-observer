@@ -80,8 +80,14 @@ class FakeSource:
     def logs(self, component, tail=80):
         return f"{component} log line\nadmin password = hunter2\n"
 
-    def splunk_search(self, component, query, earliest, latest, max_count):
+    def splunk_search(self, component, query, earliest, latest, max_count, app=None):
         self.searches = getattr(self, "searches", []) + [query]
+        answers = getattr(self, "answers", {})  # (component, text the query contains) -> rows, or an exception to raise
+        for (where, needle), rows in answers.items():
+            if where == component and needle in query:
+                if isinstance(rows, Exception):
+                    raise rows
+                return rows, f"splunkd {component} oneshot as lab_observer"
         return [{"component": "TailReader", "count": "3", "_raw": "raw event text"}], f"splunkd {component} oneshot"
 
     def container_action(self, component, action):
