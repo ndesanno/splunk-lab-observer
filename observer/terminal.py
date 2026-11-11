@@ -49,6 +49,13 @@ def current_run(store, data_dir):
 def ask_page(store, run, action, payload):
     """Have the owner's open page do one action in its live view; wait for the reading it returns."""
     if time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
+        # An open page follows a session only once it does something after the page opened, so
+        # give a page that was opened during a quiet spell a moment to pick this session up.
+        run.save()
+        deadline = time.time() + PAGE_STALE_SECONDS
+        while time.time() < deadline and time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
+            time.sleep(0.5)
+    if time.time() - store.page_watch(run.id)["seen"] > PAGE_STALE_SECONDS:
         raise RuntimeError("No observer page is following this session, so there is no shared view. "
                            "Ask the owner to open the observer page.")
     request_id = secrets.token_hex(4)

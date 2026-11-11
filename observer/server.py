@@ -475,6 +475,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
         snapshot["capture"] = self.server.capture.status if self.server.capture else None
         snapshot["recent_changes"] = store.changes(limit=40)
         snapshot["login_required"] = self.server.login is not None
+        operator = self.server.assistant.operator if self.server.assistant else None
+        snapshot["test_account"] = operator.username if operator else None
         snapshot["history_from"] = store.earliest()
         return snapshot
 

@@ -55,6 +55,12 @@
     .focus { position: fixed; inset: 0; z-index: 20; background: rgba(5, 9, 18, .92); display: flex; flex-direction: column; padding: 1rem; gap: .5rem; }
     .focus .tile-body { flex: 1; aspect-ratio: auto; border: 1px solid var(--line); border-radius: .5rem; }
     .focus-main { flex: 1; min-height: 0; display: flex; gap: .6rem; }
+    /* A live tile is focused where it is: moving its frame in the document would reload the Splunk page. */
+    .focus-slot { flex: 1; min-width: 0; }
+    .tile.focused { position: fixed; z-index: 21; margin: 0; border-radius: .5rem; }
+    .tile.focused .tile-head, .tile.focused .tile-foot { display: none; }
+    .tile.focused .tile-body { flex: 1; aspect-ratio: auto; border-radius: .5rem; }
+    .view-path { font-family: ui-monospace, monospace; font-size: .8rem; max-width: 34rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .screens { width: 17rem; flex: none; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; padding: .5rem; }
     .screens input { width: 100%; background: #0b1220; color: white; border: 1px solid #69809a; border-radius: .35rem; padding: .35rem; margin-bottom: .4rem; }
     .screens h4 { margin: .6rem 0 .2rem; font-size: .78rem; color: var(--muted); font-weight: 600; }
@@ -209,6 +215,48 @@
   const byId = id => lab && lab.components.find(item => item.id === id);
   const displayName = component => component.owner_name || component.id;
   const isWeb = component => Boolean(component.web_path);
+  const HOME = '/en-US/app/launcher/home';
+  const baseOf = component => component.web_path.replace(/\/$/, '');
+  const store = {
+    get(key) { try { return localStorage.getItem(key) || ''; } catch (_error) { return ''; } },
+    set(key, value) { try { localStorage.setItem(key, value); } catch (_error) { /* storage unavailable */ } },
+  };
+  // Where a live view is now, as a path inside its Splunk Web ('' while loading or on another site).
+  function framePath(frame, component) {
+    try {
+      const where = frame.contentWindow.location;
+      const path = where.pathname + where.search;
+      return path.startsWith(baseOf(component) + '/') ? path.slice(baseOf(component).length) : '';
+    } catch (_error) { return ''; }
+  }
+  const worthKeeping = path => path && !/\/account\/(login|logout)/.test(path);
+  // A live view opens on the screen it last showed, not on Splunk's heavy home page every time.
+  function liveFrame(component) {
+    const remembered = store.get(`screen:${component.id}`);
+    const frame = h('iframe', {src: baseOf(component) + (worthKeeping(remembered) ? remembered : HOME), title: `Live Splunk Web of ${displayName(component)}`});
+    frame.addEventListener('load', () => {
+      const path = framePath(frame, component);
+      if (worthKeeping(path)) store.set(`screen:${component.id}`, path);
+      checkCaching(frame, component);
+      updateViewPath();
+    });
+    return frame;
+  }
+  // Without a trusted certificate a browser keeps nothing: every Splunk page downloads all its files again.
+  let cachingOff = false;
+  function checkCaching(frame, component) {
+    try {
+      const files = frame.contentWindow.performance.getEntriesByType('resource').filter(item => item.name.includes('/static/@') && item.decodedBodySize > 0);
+      if (files.length < 10) return;
+      const seen = store.get(`loaded:${component.id}`);
+      store.set(`loaded:${component.id}`, '1');
+      const before = cachingOff;
+      if (files.some(item => item.transferSize === 0)) cachingOff = false;
+      else if (seen) cachingOff = true;
+      if (before !== cachingOff) render();
+    } catch (_error) { /* timing not available */ }
+  }
+  const focusFrame = () => document.querySelector('.tile.focused iframe, .focus iframe');
 
   function stateBadge(component) {
     const status = component.status || {};
@@ -299,9 +347,17 @@
   }
 
   // --- data -------------------------------------------------------------------------
+  let labTag = null;
+  let addressRead = false;
   async function refresh() {
     try {
-      lab = await api('/observer/api/lab');
+      const response = await fetch('/observer/api/lab', {cache: 'no-store', headers: labTag ? {'If-None-Match': labTag} : {}});
+      if (response.status === 401) { window.location.assign('/observer/login'); return; }
+      if (response.status === 304) return;  // nothing new was recorded: leave the page as it is
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      labTag = response.headers.get('ETag');
+      lab = await response.json();
+      if (!addressRead) { addressRead = true; readAddress(); }  // before the first render rewrites the address
       document.getElementById('logout').hidden = !lab.login_required;
       if (!layout.tiles.length && !savedLayout) defaultLayout();
       document.getElementById('summary').textContent =
@@ -344,7 +400,24 @@
   panes.wall.append(wallTop, grid);
   document.getElementById('main').append(panes.wall, panes.architecture, panes.coverage, panes.overview, panes.changes);
 
+  // The focused view and tab are kept in the address, so a reload or a bookmark comes back to them.
+  function writeAddress() {
+    const parts = [tab !== 'wall' ? `tab=${tab}` : '', focused ? `focus=${encodeURIComponent(focused)}` : ''].filter(Boolean);
+    const hash = parts.length ? `#${parts.join('&')}` : '';
+    if (window.location.hash !== hash) window.history.replaceState(null, '', window.location.pathname + hash);
+  }
+  function readAddress() {
+    const values = new URLSearchParams(window.location.hash.slice(1));
+    if (values.get('tab') in panes) tab = values.get('tab');
+    if (values.get('focus') && byId(values.get('focus'))) focused = values.get('focus');
+  }
+  // A live tile that is focused stays in the wall's document and is laid over the page.
+  const focusedInPlace = () => { const entry = focused && tileNodes.get(focused); return Boolean(entry && entry.live && !history); };
+
   function render() {
+    if (focused && !byId(focused)) focused = null;
+    if (focused && layout.tiles.some(tile => tile.id === focused && tile.live) && !history) tab = 'wall';  // its tile lives in the wall
+    writeAddress();
     for (const button of document.querySelectorAll('nav button')) button.setAttribute('aria-selected', String(button.dataset.tab === tab));
     for (const [name, pane] of Object.entries(panes)) pane.hidden = name !== tab;
     renderWall();
@@ -370,6 +443,10 @@
         const tiles = allWebTiles().map(tile => ({id: tile.id, live: live.has(tile.id)}));
         const extra = layout.tiles.filter(tile => !tiles.some(item => item.id === tile.id));
         layout.tiles = tiles.concat(extra); render(); }}, `Show all Splunk screens (${lab.components.filter(isWeb).length})`),
+      lab.test_account && live ? h('button', {type: 'button', title: `Sign every live view in as ${lab.test_account}, the account Claude tests with`, onclick: async event => {
+        event.target.disabled = true;
+        try { await signInAll(); } catch (error) { alert(error.message); }
+        render(); }}, `Sign in live views as ${lab.test_account}`) : null,
       h('button', {type: 'button', onclick: saveLayout}, layoutDirty() ? 'Save layout' : 'Layout saved'),
       savedLayout ? h('button', {type: 'button', onclick: async () => { await loadLayout(); render(); }, disabled: !layoutDirty()}, 'Restore saved') : null,
       h('span', {class: 'muted'}, savedLayout ? ['Saved ', stamp(savedLayout.saved_at)] : 'Not saved yet'),
@@ -383,6 +460,8 @@
         `A preview more than ${Math.round(history.data.missing_capture_after_seconds / 60)} minutes old, or whose file has expired, is marked missing.`,
         h('details', {}, h('summary', {}, `${changes.length} change(s) within 30 minutes of this time`), changesTable(changes, true))));
     }
+    if (cachingOff) wrapper.append(h('div', {class: 'notice'}, 'Your browser is downloading Splunk’s files again on every page instead of keeping them. ',
+      'That happens when the observer’s certificate is not trusted on this computer: trust cert.pem in Keychain Access (see the README), then reload.'));
     if (live > MAX_LIVE && !history) wrapper.append(h('div', {class: 'notice'}, `${live} live views are open. Each is a full Splunk page in your browser; more than ${MAX_LIVE} may slow it down. Switch some to previews.`));
     if (pickerOpen) wrapper.append(renderPicker());
     if (!layout.tiles.length) wrapper.append(h('p', {class: 'muted'}, 'No views selected. Use “Choose views” to add components.'));
@@ -394,7 +473,7 @@
       if (!component) return;
       wanted.add(tile.id);
       const view = history ? historical(component) : component;
-      const live = !history && tile.live && focused !== tile.id && isWeb(component);
+      const live = !history && tile.live && isWeb(component);
       let entry = tileNodes.get(tile.id);
       if (entry && entry.live !== live) { entry.node.remove(); entry = null; }
       if (!entry) {
@@ -407,6 +486,12 @@
       updateTile(entry, view, tile, index);
     });
     for (const [id, entry] of tileNodes) if (!wanted.has(id)) { entry.node.remove(); tileNodes.delete(id); }
+    for (const [id, entry] of tileNodes) {
+      const inPlace = id === focused && focusedInPlace();
+      entry.node.classList.toggle('focused', inPlace);
+      entry.node.draggable = !inPlace;
+      if (!inPlace) entry.node.removeAttribute('style'), entry.node.style.order = layout.tiles.findIndex(tile => tile.id === id);
+    }
   }
 
   function historical(component) {
@@ -506,7 +591,8 @@
       entry.node.append(head, body, foot);
     }
   }
-  const liveFoot = component => h('div', {class: 'tile-foot'}, `Live · ${component.web_path} · sign in with your own lab account`);
+  const liveFoot = component => h('div', {class: 'tile-foot'}, `Live · ${component.web_path} · `,
+    signedIn.get(component.id) ? `signed in as ${signedIn.get(component.id)}` : 'sign in with your own lab account');
 
   function tileContent(component, live) {
     const body = h('div', {class: 'tile-body'});
@@ -536,7 +622,7 @@
       foot = h('div', {class: 'tile-foot'}, 'Console: podman logs and stats');
       loadConsole(component.id, consoleNode, foot);
     } else if (live) {
-      body.append(h('iframe', {src: `${component.web_path}en-US/app/launcher/home`, title: `Live Splunk Web of ${displayName(component)}`}));
+      body.append(liveFrame(component));
       foot = liveFoot(component);
     } else {
       const preview = (component.status || {}).preview;
@@ -554,6 +640,12 @@
   }
 
   function layoutFrames() {
+    const slot = document.querySelector('.focus-slot');
+    const tile = document.querySelector('.tile.focused');
+    if (slot && tile) {
+      const box = slot.getBoundingClientRect();
+      Object.assign(tile.style, {top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px`});
+    }
     for (const frame of document.querySelectorAll('.tile-body iframe')) {
       const box = frame.parentElement.getBoundingClientRect();
       if (!box.width) continue;
@@ -590,29 +682,56 @@
 
   function renderFocus() {
     const existing = document.querySelector('.focus');
-    if (existing && existing.dataset.id === focused) return;
+    const mode = focusedInPlace() ? 'tile' : history ? 'history' : 'own';
+    if (existing && existing.dataset.id === focused && existing.dataset.mode === mode) return;
     existing?.remove();
     const component = focused && byId(focused);
     if (!component) return;
-    const view = history ? historical(component) : component;
-    const body = tileContent(view, isWeb(component) && !history)[0];
+    const live = isWeb(component) && !history;
     const main = h('div', {class: 'focus-main'});
-    if (isWeb(component) && !history) main.append(screenList(component, body.querySelector('iframe')));
-    main.append(body);
-    document.body.append(h('div', {class: 'focus', 'data-id': component.id, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
-      h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component), h('span', {class: 'muted'}, component.web_path || ''),
+    let frame = null;
+    if (mode === 'tile') {
+      frame = tileNodes.get(focused).node.querySelector('iframe');
+      main.append(screenList(component, frame), h('div', {class: 'focus-slot'}));
+    } else {
+      const body = tileContent(history ? historical(component) : component, live)[0];
+      frame = body.querySelector('iframe');
+      if (live) main.append(screenList(component, frame));
+      main.append(body);
+    }
+    const act = work => () => { try { work(focusFrame().contentWindow); } catch (_error) { /* the view is elsewhere */ } };
+    document.body.append(h('div', {class: 'focus', 'data-id': component.id, 'data-mode': mode, role: 'dialog', 'aria-label': `Focused view of ${displayName(component)}`},
+      h('div', {class: 'row'}, h('strong', {}, displayName(component)), stateBadge(component),
+        live ? h('button', {type: 'button', class: 'small', title: 'Back in this view', onclick: act(view => view.history.back())}, '←') : null,
+        live ? h('button', {type: 'button', class: 'small', title: 'Reload this view', onclick: act(view => view.location.reload())}, '⟳') : null,
+        live ? h('span', {class: 'muted view-path', id: 'view-path', title: 'Where this view is now'}, component.web_path) : h('span', {class: 'muted'}, component.web_path || ''),
         h('span', {style: 'flex:1'}),
-        isWeb(component) && !history ? h('span', {class: 'muted', id: 'view-account', style: 'font-size:.8rem'}, signedIn.get(component.id) ? `Signed in as ${signedIn.get(component.id)}` : '') : null,
-        isWeb(component) && !history ? h('button', {type: 'button', title: 'Sign this view in as the account Claude tests with, so you see the same session', onclick: async event => {
+        live ? h('span', {class: 'muted', id: 'view-account', style: 'font-size:.8rem'}, signedIn.get(component.id) ? `Signed in as ${signedIn.get(component.id)}` : '') : null,
+        live ? h('button', {type: 'button', title: 'Sign this view in as the account Claude tests with, so you see the same session', onclick: async event => {
           event.target.disabled = true;
           try { await signInView(component.id, ''); } catch (error) { alert(error.message); }
           event.target.disabled = false;
         }}, 'Use test account') : null,
-        isWeb(component) ? h('a', {href: `${component.web_path}en-US/app/launcher/home`, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
+        isWeb(component) ? h('a', {id: 'view-open', href: baseOf(component) + HOME, target: '_blank', rel: 'noopener'}, 'Open in a new tab') : null,
         h('button', {type: 'button', onclick: () => openDrawer(component.id)}, 'Details'),
         h('button', {type: 'button', onclick: () => { focused = null; render(); }}, 'Close (Esc)')),
       main));
+    updateViewPath();
   }
+  // Splunk changes screens without loading a new page, so the shown address is read from the view itself.
+  function updateViewPath() {
+    const label = document.getElementById('view-path');
+    const frame = focusFrame();
+    const component = focused && byId(focused);
+    if (!label || !frame || !component) return;
+    const path = framePath(frame, component);
+    if (!path) return;
+    if (label.textContent !== path) { label.textContent = path; label.title = `This view is at ${baseOf(component)}${path}`; }
+    const open = document.getElementById('view-open');
+    if (open) open.href = baseOf(component) + path;
+    if (worthKeeping(path)) store.set(`screen:${component.id}`, path);
+  }
+  setInterval(updateViewPath, 1000);
 
   function screenList(component, frame) {
     const panel = h('div', {class: 'screens', 'aria-label': 'Screens'}, h('p', {class: 'muted'}, 'Loading screens…'));
@@ -1057,6 +1176,7 @@
       const {latest} = await api('/observer/api/assistant/live');
       if (!latest || latest.status !== 'running' || followed.has(latest.id) || activeRun()) return;
       if (assistant.run && assistant.run.id === latest.id) return;
+      // A session left running before this page opened is not followed until it does something new.
       if (Date.parse(latest.updated_at) < pageOpenedAt - 60000) return;
       followed.add(latest.id);
       if (!assistant.open) setAssistantOpen(true);
@@ -1103,6 +1223,33 @@
     const style = el.ownerDocument.defaultView.getComputedStyle(el);
     return style.visibility !== 'hidden' && style.display !== 'none';
   }
+  // Only what the owner can see on the screen is read: Splunk keeps hidden banners, menus and dialogs
+  // in the page, and reading those reports things that are not on screen. One line per block of text.
+  function visibleText(doc) {
+    const view = doc.defaultView;
+    const shown = new Map();
+    const isShown = el => {
+      if (!shown.has(el)) {
+        const style = view.getComputedStyle(el);
+        shown.set(el, el.getClientRects().length > 0 && style.visibility !== 'hidden' && Number(style.opacity) !== 0
+          && el.getAttribute('aria-hidden') !== 'true' && !el.matches(NOT_FOR_MODEL) && !el.matches('input[type=password]')
+          && (el === doc.body || !el.parentElement || isShown(el.parentElement)));
+      }
+      return shown.get(el);
+    };
+    const blockOf = el => { while (el !== doc.body && view.getComputedStyle(el).display.startsWith('inline')) el = el.parentElement; return el; };
+    const lines = [];
+    let block = null, size = 0;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && size < 9000; node = walker.nextNode()) {
+      const piece = node.nodeValue.replace(/\s+/g, ' ').trim();
+      if (!piece || !node.parentElement || !isShown(node.parentElement)) continue;
+      const owner = blockOf(node.parentElement);
+      if (owner === block) lines[lines.length - 1] += ` ${piece}`; else lines.push(piece);
+      block = owner; size += piece.length + 1;
+    }
+    return lines.join('\n');
+  }
   function snapshot(frame) {
     const doc = frame.contentDocument;
     if (!doc || !doc.body) throw new Error('The view has not loaded yet');
@@ -1122,11 +1269,8 @@
       elements.push({ref: el.dataset.observerRef, role: el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'input' ? `${type} field` : tag),
         label, type, value, href, in_form: Boolean(el.closest('form, [role=dialog], .modal'))});
     }
-    const clone = doc.body.cloneNode(true);
-    const omittedEvents = clone.querySelectorAll('.raw-event, .json-event, td.event').length;
-    clone.querySelectorAll(NOT_FOR_MODEL).forEach(node => node.remove());
-    clone.querySelectorAll('input[type=password]').forEach(node => node.remove());
-    const text = (clone.textContent || '').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+    const omittedEvents = doc.body.querySelectorAll('.raw-event, .json-event, td.event').length;
+    const text = visibleText(doc);
     const path = frame.contentWindow.location.pathname + frame.contentWindow.location.search;
     const omitted = [omittedEvents ? `${omittedEvents} raw event(s) on screen were left out` : '', omittedFields ? 'password values hidden' : ''].filter(Boolean).join('; ');
     return {url: path, title: doc.title, text: text.slice(0, 8000), elements, omitted, login_page: /\/account\/login/.test(path),
@@ -1151,8 +1295,8 @@
   async function viewFor(component) {
     const target = byId(component);
     if (!target || !isWeb(target)) throw new Error(`${component} has no Splunk Web`);
-    if (focused !== component || !document.querySelector('.focus iframe')) { showScreen(component, ''); await sleep(500); }
-    const frame = document.querySelector('.focus iframe');
+    if (focused !== component || !focusFrame()) { showScreen(component, ''); await sleep(500); }
+    const frame = focusFrame();
     for (let i = 0; i < 40 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
     return frame;
   }
@@ -1162,22 +1306,39 @@
     const result = await postWithReason(`/observer/api/components/${encodeURIComponent(component)}/signin`, {});
     signedIn.set(component, result.account);
     const target = byId(component);
-    let frame = document.querySelector('.focus iframe');
-    if (focused !== component || !frame) { showScreen(component, path); await sleep(500); frame = document.querySelector('.focus iframe'); }
-    const current = (() => { try { return frame.contentWindow.location.pathname.replace(target.web_path.replace(/\/$/, ''), ''); } catch (_error) { return ''; } })();
-    const next = path || (current && !/\/account\/(login|logout)/.test(current) ? current : '/en-US/app/launcher/home');
-    frame.src = target.web_path.replace(/\/$/, '') + next;
+    let frame = focusFrame();
+    if (focused !== component || !frame) { showScreen(component, path); await sleep(500); frame = focusFrame(); }
+    await reloadSignedIn(frame, target, path);
     await sleep(800);
     for (let i = 0; i < 80 && (!frame.contentDocument || frame.contentDocument.readyState !== 'complete'); i++) await sleep(250);
     const label = document.getElementById('view-account');
     if (label) label.textContent = `Signed in as ${result.account}`;
     return result.account;
   }
+  // After a sign-in the view reloads where it was, or on the given path; a sign-in page gives way to the last screen.
+  async function reloadSignedIn(frame, target, path) {
+    const current = framePath(frame, target);
+    const remembered = store.get(`screen:${target.id}`);
+    frame.src = baseOf(target) + (path || (worthKeeping(current) ? current : worthKeeping(remembered) ? remembered : HOME));
+  }
+  async function signInAll() {
+    const ids = layout.tiles.filter(tile => tile.live && byId(tile.id) && isWeb(byId(tile.id))).map(tile => tile.id);
+    const failed = [];
+    await Promise.all(ids.map(async id => {
+      try {
+        const result = await postWithReason(`/observer/api/components/${encodeURIComponent(id)}/signin`, {});
+        signedIn.set(id, result.account);
+        const frame = tileNodes.get(id) && tileNodes.get(id).node.querySelector('iframe');
+        if (frame) await reloadSignedIn(frame, byId(id), '');
+      } catch (error) { failed.push(`${displayName(byId(id))}: ${await errorText(error)}`); }
+    }));
+    if (failed.length) throw new Error(`Could not sign in:\n${failed.join('\n')}`);
+  }
   async function pageAction(action, payload) {
     if (action === 'signin') {
       const account = await signInView(payload.component, payload.path);
       await sleep(1500);
-      return Object.assign(snapshot(document.querySelector('.focus iframe')), {account});
+      return Object.assign(snapshot(focusFrame()), {account});
     }
     const frame = await viewFor(payload.component);
     if (action === 'read') return snapshot(frame);
@@ -1236,10 +1397,10 @@
     tab = 'wall';
     focused = component;
     render();
-    const frame = document.querySelector('.focus iframe');
-    if (frame && path) {
+    const frame = focusFrame();
+    if (frame && path && framePath(frame, byId(component)) !== path) {
       frame.dataset.screen = path;
-      frame.src = byId(component).web_path.replace(/\/$/, '') + path;
+      frame.src = baseOf(byId(component)) + path;
     }
   }
   async function sendPrompt() {
@@ -1468,6 +1629,7 @@
   for (const button of document.querySelectorAll('nav button')) button.addEventListener('click', () => { tab = button.dataset.tab; render(); });
   document.getElementById('discover').addEventListener('click', async () => { await post('/observer/api/discover'); setTimeout(refresh, 8000); });
   document.getElementById('capture').addEventListener('click', async () => { await post('/observer/api/captures'); refresh(); });
+  window.addEventListener('hashchange', () => { readAddress(); render(); });
   (async () => {
     await loadLayout();
     await refresh();

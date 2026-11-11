@@ -125,6 +125,13 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             return
         body = f"<h1>Splunk Web of {name}</h1>".encode()
+        if "/app/search/rich" in self.path:  # a page with the things a reading must and must not include
+            body = (f"<title>Rich</title><h1>Visible heading of {name}</h1>"
+                    "<div style='display:none'>Hidden banner: network connection lost</div>"
+                    "<div aria-hidden='true'>Hidden menu</div><div style='visibility:hidden'>Invisible note</div>"
+                    "<p>Results <span>ready</span></p><button>Save As</button><a href='other'>Datasets</a>"
+                    "<div class='raw-event'>raw event text user=alice</div>"
+                    "<input type='password' value='secret'><script>var hiddenScriptText = 1;</script>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
