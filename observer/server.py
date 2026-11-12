@@ -781,7 +781,6 @@ def main():
     coverage = Coverage(store, lab, args.config_dir)
     assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture, coverage)
     checks = Checks(lab, store, coverage, args.config_dir, assistant.lab_state, capture.read_pages)
-    monitor.checks = checks
     options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage, checks=checks)
     if args.lan_address:
         address = private_lan_address(args.lan_address)

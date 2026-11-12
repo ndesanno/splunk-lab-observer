@@ -2,7 +2,7 @@
 
 A check is data (a JSON file under observer/checks/, or checks.json in the config directory). It
 names what an app shows, an independent way to get the same fact, and how to compare them. A
-round runs every check with the read-only lab_observer account, keeps each reading as a step of
+round, started by the owner and never on a schedule, runs every check with the read-only lab_observer account, keeps each reading as a step of
 one run, and marks the coverage case each check stands for. A reading that cannot be taken makes
 the check unverified, never passed.
 
@@ -42,11 +42,9 @@ from observer.assistant import Run
 from observer.store import utc_now
 
 PACKAGED = Path(__file__).with_name("checks")
-# Scheduled checks only read. The account cannot write either; this refuses the attempt outright.
+# Checks only read. The account cannot write either; this refuses the attempt outright.
 CHANGING_COMMAND = re.compile(r"(?i)\|\s*(outputlookup|outputcsv|collect|mcollect|meventcollect|delete|sendemail|sendalert|"
                               r"script|run|runshellscript|dbxoutput|tscollect|summaryindex|sichart|sitimechart|sistats|map)\b")
-# How often the scheduler runs a round; a result older than twice this is shown as stale.
-INTERVAL_SECONDS = 6 * 60 * 60
 COMPARES = {"equal", "each_equal", "all_equal"}
 CASES = {"normal", "empty", "incorrect", "permission", "error", "recovery"}
 
@@ -273,8 +271,7 @@ class Checks:
         accepted = self.store.get_setting("check_accepted", {})
         known = lambda check: accepted.get(check["id"]) if self._known(last.get(check["id"]), accepted.get(check["id"])) else None  # noqa: E731
         return {"checks": [check | {"last": last.get(check["id"]), "accepted": known(check)} for check in checks], "problems": problems,
-                "status": dict(self.status), "account": getattr(self.lab.source, "username", "lab_observer"),
-                "interval_seconds": INTERVAL_SECONDS}
+                "status": dict(self.status), "account": getattr(self.lab.source, "username", "lab_observer")}
 
     @staticmethod
     def _known(last, acceptance):
@@ -300,7 +297,7 @@ class Checks:
         self.store.put_setting("check_accepted", accepted)
         return True
 
-    def run_round(self, ids=None, reason="scheduled"):
+    def run_round(self, ids=None, reason="asked for by the owner"):
         """Run every check (or the named ones) as one run. Returns the run id, or None if a round is already running."""
         if not self.lock.acquire(blocking=False):
             return None
@@ -414,6 +411,6 @@ class Checks:
         tested = result in {"pass", "fail"}
         stored = self.coverage.record(source["app"], check["item"], check.get("case", "normal"), "tested" if tested else "unverified",
                                       verdict=result if tested else None, run_id=run.id, evidence=steps,
-                                      note=f"check {check['id']}: {detail}"[:500], by="scheduled check")
+                                      note=f"check {check['id']}: {detail}"[:500], by="check")
         run.event("coverage", app=source["app"], item=check["item"], case=check.get("case", "normal"),
                   result=result if stored == "tested" else stored, evidence_steps=steps, note=f"check {check['id']}")

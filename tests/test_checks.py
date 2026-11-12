@@ -50,7 +50,7 @@ class CheckRoundTest(ChecksFixture):
         self.assertIn("savedsearch", readings[0]["input"]["search"])
         mark = self.coverage.marks("TA-hindsight")[0]
         self.assertEqual((mark["item"], mark["case"], mark["status"], mark["verdict"], mark["by"], mark["run_id"]),
-                         ("screen:hindsight_overview", "normal", "tested", "pass", "scheduled check", run["id"]))
+                         ("screen:hindsight_overview", "normal", "tested", "pass", "check", run["id"]))
         self.assertEqual(mark["evidence"], result["evidence_steps"])
         self.assertEqual(self.checks.summary()["checks"][-1]["last"]["result"], "pass")
 

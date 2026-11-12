@@ -10,7 +10,7 @@ The app tickets (#12 to #19) each ask whether what an app shows is true, and #20
 
 Checks ship as JSON under `observer/checks/` and the owner can add more in `checks.json` in the config directory. They are validated when loaded; a search that uses a command that writes or runs something (`outputlookup`, `collect`, `delete`, `sendalert`, `map` and the like) is refused and reported, and the account could not write in any case.
 
-A round runs every check as one run with origin `check` and no model. Each reading is a step that keeps the search, the component, the account and the value taken. Each result names the steps it rests on, and marks the coverage case the check stands for, by "scheduled check". The round's verdict is fail if any check failed, inconclusive if any could not be verified, and pass otherwise. The scheduler starts a round ten minutes after the observer starts and then every six hours; the owner can run one check or all of them from the Checks tab.
+A round runs every check as one run with origin `check` and no model. Each reading is a step that keeps the search, the component, the account and the value taken. Each result names the steps it rests on, and marks the coverage case the check stands for, by "check". The round's verdict is fail if any check failed, inconclusive if any could not be verified, and pass otherwise. The owner runs one check or all of them from the Checks tab.
 
 **A reading that cannot be taken makes the check unverified, never passed.** Missing permission, an unreachable component, an empty answer and a missing field all end the same way, with the reason shown. This is the rule that keeps a green board honest, and it is why a lab where `lab_observer` cannot see an app's saved searches shows most checks as unverified until the owner grants the app's read-only role.
 
@@ -28,4 +28,12 @@ by one browser, before the comparisons.
 A failure the owner knows about can be accepted with a reason. The result and the coverage mark stay
 "fail"; only the round's verdict and the new-failure notice leave it out. Acceptance is tied to the
 finding's exact text and ends when that changes, so an accepted failure cannot hide a different one.
+
+## Addendum (2026-11-12): no schedule
+
+Rounds first ran ten minutes after start and then every six hours. The owner decided that tests run
+only when asked for: a round uses the lab (searches, and a browser for page readings) and its result
+matters when someone is looking. The scheduler is removed; the Checks tab is the only way a round
+starts. The "stale" marker went with it, and a "new failure" is now a check that failed in its
+latest run after giving another result before.
 

@@ -891,7 +891,7 @@
     const data = checks.data;
     const running = Boolean(data && data.status.running);
     const parts = [h('p', {class: 'muted'}, 'Each check compares what an app shows with an independent reading of the same fact. The observer runs them itself',
-      data ? ` as ${data.account}` : '', ', read-only and without an AI model, about every six hours. A reading that cannot be taken leaves the check unverified, never passed. ',
+      data ? ` as ${data.account}` : '', ', read-only and without an AI model, only when you start them here. A reading that cannot be taken leaves the check unverified, never passed. ',
       h('button', {class: 'small primary', type: 'button', disabled: running || !data, onclick: () => runChecks()}, running ? 'Running…' : 'Run all now'))];
     if (checks.error) parts.push(h('div', {class: 'notice'}, checks.error));
     if (data) {
@@ -906,8 +906,7 @@
           name ? `${label[name] || name} ${counts[name]}` : `All ${data.checks.length}`))));
       if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
         parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (./observer.sh app-roles in the lab checkout), then run them again.`));
-      const stale = 2 * (data.interval_seconds || 21600) * 1000;
-      const newFailures = data.checks.filter(check => !check.accepted && check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
+      const newFailures = data.checks.filter(check => !check.accepted && check.last && check.last.result === 'fail' && check.last.was && check.last.since === check.last.at);
       if (newFailures.length) parts.push(h('div', {class: 'notice'}, `New failure${newFailures.length > 1 ? 's' : ''}: ${newFailures.map(check => check.title).join('; ')}`));
       parts.push(renderMilestone());
       const tickets = new Map();
@@ -923,10 +922,10 @@
             h('td', {}, h('div', {}, check.title), h('div', {class: 'muted'}, check.id, check.app ? ` · ${check.app}` : ''), readingText(check.shown), readingText(check.expected)),
             h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, label[state(check)] || state(check)),
               check.accepted ? h('div', {class: 'muted'}, `You accepted this ${stamp(check.accepted.at)}: ${check.accepted.reason}`) : null,
-              !check.accepted && check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < 2 * stale ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
+              !check.accepted && check.last && check.last.result === 'fail' && check.last.was && check.last.since === check.last.at ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
               check.last && check.last.since !== check.last.at ? h('div', {class: 'muted'}, 'since ', stamp(check.last.since)) : null),
             h('td', {style: 'word-break:break-word'}, check.last ? check.last.detail : ''),
-            h('td', {}, check.last ? [stamp(check.last.at), Date.now() - Date.parse(check.last.at) > stale ? h('span', {class: 'badge warn', style: 'margin-left:.3rem', title: 'Older than two scheduled rounds'}, 'stale') : null, ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
+            h('td', {}, check.last ? [stamp(check.last.at), ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
               onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(check.last.run_id); }}, `steps ${check.last.steps.map(seq => `#${seq}`).join(', ') || `#${check.last.step}`}`)] : ''),
             h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run'),
               check.accepted ? h('button', {class: 'small', type: 'button', style: 'margin-top:.3rem', onclick: () => acceptCheck(check, true)}, 'Undo accept')
