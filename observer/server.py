@@ -434,8 +434,9 @@ class ObserverHandler(BaseHTTPRequestHandler):
             body = self._read_json()
             if body is None:
                 return
-            run = assistant.runs.get(parts[1])
-            if run is None or not run.decide(parts[3], body.get("decision"), body.get("note")):
+            decision = {"approve": "approved", "deny": "declined"}.get(body.get("decision"))
+            note = str(body.get("note") or "")[:500] or None
+            if decision is None or not self.server.store.decide_approval(parts[1], parts[3], decision, note):
                 self._json(409, {"error": "no_pending_approval"})
                 return
             self._json(200, {"decided": True})

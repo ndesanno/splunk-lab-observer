@@ -20,6 +20,12 @@ owner's open observer page in that view, each element highlighted. They fail if 
     python -m observer.terminal read p-hq-sh1
     python -m observer.terminal click p-hq-sh1 e12 --why "Open the Members tab"
 
+A change to the lab waits for the owner's decision in the observer page; `approve` exits 0 only when
+the owner approved it.
+
+    python -m observer.terminal approve "Add one exception to Hindsight on p-mgmt" --reason "Issue #13" \
+        --effect "One finding shows as Risk accepted" --cleanup "The exception is revoked and its record deleted"
+
 Commands never carry credentials; write only what the owner may see.
 """
 
@@ -111,6 +117,11 @@ def main(argv=None):
     upload.add_argument("ref")
     upload.add_argument("file", help="file name in <data dir>/packages, e.g. federation_pulse_spoke-100641.tgz")
     upload.add_argument("--why", default="")
+    approve = commands.add_parser("approve", help="ask the owner to approve a change before making it; exit 0 only if approved")
+    approve.add_argument("action", help="what will be done, e.g. 'Add one exception to Hindsight on p-mgmt'")
+    approve.add_argument("--reason", required=True)
+    approve.add_argument("--effect", required=True, help="what changes in the lab")
+    approve.add_argument("--cleanup", required=True, help="how it is put back")
     commands.add_parser("end", help="close the session").add_argument("summary", nargs="?", default="")
     args = parser.parse_args(argv)
 
@@ -185,6 +196,10 @@ def main(argv=None):
             return 1
         print(format_reading(reading))
         return 0
+    elif args.command == "approve":
+        decision = run.ask_approval(args.action, {"reason": args.reason, "expected_effect": args.effect, "cleanup": args.cleanup})
+        print(decision["decision"] + (f": {decision['note']}" if decision.get("note") else ""))
+        return 0 if decision["decision"] == "approved" else 1
     elif args.command == "end":
         if args.summary:
             run.event("text", text=args.summary)

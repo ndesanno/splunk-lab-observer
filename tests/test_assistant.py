@@ -381,6 +381,43 @@ class TerminalSessionTest(unittest.TestCase):
         self.assertIn("restarted", record["events"][-1]["text"])
         self.assertEqual(self.store.run(terminal_id)["status"], "running")
 
+    def test_a_terminal_session_waits_for_the_owner_to_approve_a_change(self):
+        from observer.assistant import Run
+        self.terminal("start", "Fixture work")
+        run_id = self.store.latest_run()["id"]
+        outcome = {}
+        ask = ("approve", "Add one exception", "--reason", "Issue 13", "--effect", "One finding excepted", "--cleanup", "Revoke it")
+        worker = threading.Thread(target=lambda: outcome.update(code=self.terminal(*ask)))
+        worker.start()
+        deadline = time.time() + 5
+        pending = None
+        while pending is None and time.time() < deadline:
+            pending = next((item for item in self.store.run(run_id)["events"] if item["type"] == "approval"), None)
+            time.sleep(0.05)
+        self.assertEqual(pending["details"]["cleanup"], "Revoke it")
+        self.assertEqual(self.store.run(run_id)["status"], "waiting_for_approval")
+        # The owner's page decides through the observer, a different process from the session.
+        owner_side = Run(self.store, "", record=self.store.run(run_id))
+        self.assertFalse(owner_side.decide("nope", "approve"))
+        self.assertTrue(owner_side.decide(pending["approval_id"], "approve", "Go ahead"))
+        self.assertFalse(owner_side.decide(pending["approval_id"], "deny"))  # decided once
+        worker.join(5)
+        self.assertEqual(outcome["code"], 0)
+        decided = next(item for item in self.store.run(run_id)["events"] if item["type"] == "approval")
+        self.assertEqual((decided["decision"], decided["note"]), ("approved", "Go ahead"))
+
+    def test_a_restart_stops_offering_an_approval_nobody_waits_for(self):
+        from observer.assistant import Run
+        cut = Run(self.store, "Stop an indexer")
+        self.store.add_approval("a1b2c3d4", cut.id)
+        cut.event("approval", approval_id="a1b2c3d4", kind="change", action="podman stop p-idx1", details={}, decision="pending")
+        cut.set_status("waiting_for_approval")
+        Assistant(self.lab, self.store, self.temp.name)  # the observer starts again
+        record = self.store.run(cut.id)
+        self.assertEqual(record["status"], "interrupted")
+        self.assertEqual(next(item for item in record["events"] if item["type"] == "approval")["decision"], "expired")
+        self.assertFalse(Run(self.store, "", record=record).decide("a1b2c3d4", "approve"))
+
     def test_terminal_actions_run_in_the_owner_page_signed_in_as_the_test_account(self):
         import contextlib, io
         self.terminal("start", "Shared view")

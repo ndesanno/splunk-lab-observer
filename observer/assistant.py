@@ -162,7 +162,6 @@ class Run:
         self.store = store
         self.lock = threading.Lock()
         self.cancel = threading.Event()
-        self.approvals = {}  # approval id -> (threading.Event, decision dict)
         self.screens = {}  # component -> {ref: element} from the owner's page's last reading
         if record:
             self.record = record
@@ -213,21 +212,23 @@ class Run:
     # --- approvals ------------------------------------------------------------------
 
     def ask_approval(self, action, details, kind="change"):
-        """Wait for the owner's decision on a change, a walkthrough plan, or a checkpoint."""
+        """Wait for the owner's decision on a change, a walkthrough plan, or a checkpoint. The decision
+        goes through the store, so the owner's page can answer a Claude Code session as well as a run
+        in this process, and a request made before the observer restarted can still be answered."""
         approval_id = secrets.token_hex(4)
-        waiter = threading.Event()
-        decision = {}
-        self.approvals[approval_id] = (waiter, decision)
+        self.store.add_approval(approval_id, self.id)
         item = self.event("approval", approval_id=approval_id, kind=kind, action=action, details=details, decision="pending")
         self.set_status("waiting_for_approval")
         deadline = time.time() + APPROVAL_TIMEOUT_SECONDS
-        while not waiter.is_set() and not self.cancel.is_set() and time.time() < deadline:
-            waiter.wait(1)
-        self.approvals.pop(approval_id, None)
-        if self.cancel.is_set():
-            decision = {"decision": "stopped"}
-        elif not waiter.is_set():
-            decision = {"decision": "expired"}
+        decision = {"decision": "pending"}
+        while not self.cancel.is_set() and time.time() < deadline:
+            decision = self.store.approval(approval_id)
+            if decision["decision"] != "pending":
+                break
+            self.cancel.wait(0.3)
+        if decision["decision"] == "pending":
+            decision = {"decision": "stopped" if self.cancel.is_set() else "expired"}
+            self.store.decide_approval(self.id, approval_id, decision["decision"])
         self.update_event(item["seq"], decision=decision["decision"], note=decision.get("note"), decided_at=utc_now())
         self.set_status("running")
         return decision
@@ -293,12 +294,15 @@ class Run:
         return True
 
     def decide(self, approval_id, decision, note=None):
-        pending = self.approvals.get(approval_id)
-        if pending is None or decision not in {"approve", "deny"}:
-            return False
-        pending[1].update({"decision": "approved" if decision == "approve" else "declined", "note": (note or "")[:500] or None})
-        pending[0].set()
-        return True
+        decision = {"approve": "approved", "deny": "declined"}.get(decision)
+        return decision is not None and self.store.decide_approval(self.id, approval_id, decision, (note or "")[:500] or None)
+
+    def close_approvals(self, decision="expired"):
+        """No one is waiting for this run's pending approvals any more; stop offering them."""
+        for item in self.record["events"]:
+            if item["type"] == "approval" and item.get("decision") == "pending":
+                self.store.decide_approval(self.id, item["approval_id"], decision)
+                self.update_event(item["seq"], decision=decision, decided_at=utc_now())
 
 
 class Assistant:
@@ -318,6 +322,7 @@ class Assistant:
         for item in store.runs(limit=200):
             if item["status"] in {"running", "waiting_for_approval"} and item["origin"] != "terminal":
                 run = Run(store, "", record=store.run(item["id"]))
+                run.close_approvals()
                 run.event("error", text="The observer restarted while this run was working. Nothing further was done; "
                                            "any change already approved is listed above.")
                 self._finish(run, "interrupted")
