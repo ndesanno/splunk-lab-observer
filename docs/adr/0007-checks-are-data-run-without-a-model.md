@@ -15,3 +15,17 @@ A round runs every check as one run with origin `check` and no model. Each readi
 **A reading that cannot be taken makes the check unverified, never passed.** Missing permission, an unreachable component, an empty answer and a missing field all end the same way, with the reason shown. This is the rule that keeps a green board honest, and it is why a lab where `lab_observer` cannot see an app's saved searches shows most checks as unverified until the owner grants the app's read-only role.
 
 What this does not do: a check reads splunkd, not the rendered page. Whether a dashboard draws the number its search returns is still a walkthrough in the owner's view. Checks cover the cases the lab is in now (normal, and whatever is really wrong); the empty, incorrect, permission, error and recovery cases need the lab to be put into that state, which is a change and so needs the owner. Turning a passed walkthrough into checks (saved workflows, stories 30 and 31) is left for later, and the check format is meant to be its target.
+
+## Addendum (2026-11-11): page readings and accepted failures
+
+Two search readings can agree while the dashboard shows something else, so a reading may now be a
+page: the capture container's headless browser, signed in as the read-only account, opens the page
+and takes values from its visible text. A dashboard shows placeholder values while its searches run;
+a value counts only after it has been the same for three reads and the page has made no search
+request for four seconds. A page that does not settle is unverified. All pages of a round are read
+by one browser, before the comparisons.
+
+A failure the owner knows about can be accepted with a reason. The result and the coverage mark stay
+"fail"; only the round's verdict and the new-failure notice leave it out. Acceptance is tied to the
+finding's exact text and ends when that changes, so an accepted failure cannot hide a different one.
+

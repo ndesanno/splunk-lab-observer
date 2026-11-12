@@ -849,10 +849,21 @@
     catch (error) { checks.error = error.message; }
     loadChecks();
   }
+  async function acceptCheck(check, remove) {
+    const reason = remove ? '' : prompt(`Why does “${check.title}” stay failing? It will show as a known failure until its finding changes.`);
+    if (!remove && !(reason || '').trim()) return;
+    try { await post('/observer/api/checks/accept', remove ? {id: check.id, remove: true} : {id: check.id, reason}); checks.error = null; }
+    catch (error) { checks.error = error.message; }
+    loadChecks();
+  }
   function readingText(reading) {
     if (!reading) return null;
+    if (reading.page) return h('details', {}, h('summary', {}, reading.what || 'reading'),
+      h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, `page on ${reading.page.component}, read in a headless browser: ${reading.page.path}\nfinds: ${reading.page.find.join('  ·  ')}`),
+      h('div', {}, h('button', {class: 'small', type: 'button', title: 'Open this page, with these filters, in your own view', onclick: () => showScreen(reading.page.component, reading.page.path)}, 'Open this page')));
     const how = reading.search ? `search on ${(reading.search.components || [reading.search.component]).join(', ')}${reading.search.app ? ` in ${reading.search.app}` : ''}: ${reading.search.query}`
-      : reading.installed ? `installed version of ${reading.installed} on every component` : `fixed value ${JSON.stringify(reading.value)}`;
+      : reading.installed ? `installed version of ${reading.installed} on every component`
+      : reading.image ? `container image tag of ${reading.image.join(', ')}` : `fixed value ${JSON.stringify(reading.value)}`;
     return h('details', {}, h('summary', {}, reading.what || 'reading'), h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, how));
   }
   // The milestone: every inventoried feature of every app, by the state of its cases. A gap means no full-coverage claim.
@@ -885,17 +896,18 @@
     if (checks.error) parts.push(h('div', {class: 'notice'}, checks.error));
     if (data) {
       for (const problem of data.problems) parts.push(h('div', {class: 'notice'}, `Check definition skipped: ${problem}`));
-      const state = check => check.last ? check.last.result : 'not run';
-      const counts = {pass: 0, fail: 0, unverified: 0, 'not run': 0};
+      const state = check => check.accepted ? 'known' : check.last ? check.last.result : 'not run';
+      const counts = {pass: 0, fail: 0, known: 0, unverified: 0, 'not run': 0};
       for (const check of data.checks) counts[state(check)] += 1;
-      const tone = {pass: 'ok', fail: 'bad', unverified: 'warn', 'not run': ''};
-      parts.push(h('div', {class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.4rem 0'}, ['', 'fail', 'unverified', 'pass', 'not run'].map(name =>
+      const tone = {pass: 'ok', fail: 'bad', known: 'warn', unverified: 'warn', 'not run': ''};
+      const label = {known: 'known failure'};
+      parts.push(h('div', {class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.4rem 0'}, ['', 'fail', 'known', 'unverified', 'pass', 'not run'].filter(name => name !== 'known' || counts.known).map(name =>
         h('button', {class: 'small', type: 'button', 'aria-pressed': String(checks.only === name), onclick: () => { checks.only = name; renderChecks(); }},
-          name ? `${name} ${counts[name]}` : `All ${data.checks.length}`))));
+          name ? `${label[name] || name} ${counts[name]}` : `All ${data.checks.length}`))));
       if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
         parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (./observer.sh app-roles in the lab checkout), then run them again.`));
       const stale = 2 * (data.interval_seconds || 21600) * 1000;
-      const newFailures = data.checks.filter(check => check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
+      const newFailures = data.checks.filter(check => !check.accepted && check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
       if (newFailures.length) parts.push(h('div', {class: 'notice'}, `New failure${newFailures.length > 1 ? 's' : ''}: ${newFailures.map(check => check.title).join('; ')}`));
       parts.push(renderMilestone());
       const tickets = new Map();
@@ -909,13 +921,16 @@
         parts.push(h('table', {}, h('thead', {}, h('tr', {}, ['Check', 'Result', 'What was found', 'Checked', ''].map(text => h('th', {}, text)))),
           h('tbody', {}, group.map(check => h('tr', {},
             h('td', {}, h('div', {}, check.title), h('div', {class: 'muted'}, check.id, check.app ? ` · ${check.app}` : ''), readingText(check.shown), readingText(check.expected)),
-            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, state(check)),
-              check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < 2 * stale ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
+            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, label[state(check)] || state(check)),
+              check.accepted ? h('div', {class: 'muted'}, `You accepted this ${stamp(check.accepted.at)}: ${check.accepted.reason}`) : null,
+              !check.accepted && check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < 2 * stale ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
               check.last && check.last.since !== check.last.at ? h('div', {class: 'muted'}, 'since ', stamp(check.last.since)) : null),
             h('td', {style: 'word-break:break-word'}, check.last ? check.last.detail : ''),
             h('td', {}, check.last ? [stamp(check.last.at), Date.now() - Date.parse(check.last.at) > stale ? h('span', {class: 'badge warn', style: 'margin-left:.3rem', title: 'Older than two scheduled rounds'}, 'stale') : null, ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
               onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(check.last.run_id); }}, `steps ${check.last.steps.map(seq => `#${seq}`).join(', ') || `#${check.last.step}`}`)] : ''),
-            h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run')))))));
+            h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run'),
+              check.accepted ? h('button', {class: 'small', type: 'button', style: 'margin-top:.3rem', onclick: () => acceptCheck(check, true)}, 'Undo accept')
+                : check.last && check.last.result === 'fail' ? h('button', {class: 'small', type: 'button', style: 'margin-top:.3rem', title: 'You know about this failure and why it stays', onclick: () => acceptCheck(check)}, 'Accept as known') : null))))));
       }
       if (!data.checks.length) parts.push(h('div', {class: 'notice'}, 'No checks are defined.'));
     } else if (checks.loading) parts.push(h('div', {class: 'muted'}, 'Loading…'));
@@ -1583,8 +1598,8 @@
       }
       case 'check': {
         const tone = {pass: 'ok', fail: 'bad', unverified: 'warn'}[item.result] || '';
-        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ ${item.title}`), h('span', {class: `badge ${tone}`}, item.result), time),
-          h('div', {class: 'muted'}, item.detail),
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ ${item.title}`), h('span', {class: `badge ${item.accepted ? 'warn' : tone}`}, item.accepted ? 'known failure' : item.result), time),
+          h('div', {class: 'muted'}, item.detail, item.accepted ? ` · accepted by the owner: ${item.accepted}` : ''),
           item.evidence_steps?.length ? h('div', {class: 'fact-source'}, `Steps ${item.evidence_steps.map(seq => `#${seq}`).join(', ')} · ${item.check}`) : null);
       }
       case 'coverage': {

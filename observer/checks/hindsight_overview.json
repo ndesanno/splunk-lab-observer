@@ -1,0 +1,477 @@
+{
+ "fragments": {
+  "rows": "| inputlookup hindsight_findings | eval vuln_id=if(match(cve, \"^CVE-[0-9]+-[0-9]+$\"), cve, svd) | join type=left guid vuln_id [| inputlookup hindsight_exceptions_lookup | where status=\"active\" AND (tonumber(expires)=0 OR tonumber(expires)>now()) AND asset!=\"*\" | eval guid=asset, excepted_here=1 | fields guid vuln_id excepted_here] | join type=left vuln_id [| inputlookup hindsight_exceptions_lookup | where status=\"active\" AND (tonumber(expires)=0 OR tonumber(expires)>now()) AND asset=\"*\" | eval excepted_all=1 | fields vuln_id excepted_all] | eval excepted=if(isnotnull(excepted_here) OR isnotnull(excepted_all), 1, 0), vulnerable=if(hindsight_status=\"vulnerable\", 1, 0)",
+  "hosts": "| stats sum(eval(if(vulnerable=1 AND excepted=0 AND confidence=\"confirmed\", 1, 0))) as confirmed sum(eval(if(vulnerable=1 AND excepted=0 AND confidence=\"possible\", 1, 0))) as possible sum(eval(if(hindsight_status=\"unchecked\", 1, 0))) as unchecked max(fit) as fit first(version) as version by guid | eval status=case(isnull(version) OR version=\"\" OR version=\"unknown\" OR unchecked>0, \"Version unknown\", confirmed>0, \"Vulnerable\", possible>0, \"Possibly affected\", true(), \"Not affected\")",
+  "cards": "| stats count(eval(status=\"Vulnerable\")) as vulnerable count(eval(status=\"Possibly affected\")) as possible count(eval(status=\"Version unknown\")) as unknown count(eval(status=\"Not affected\")) as not_affected"
+ },
+ "checks": [
+  {
+   "id": "hindsight-overview-defaults",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with no filter changed match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (no filter changed)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-type-universal",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Type: Universal match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Type: Universal)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.fwd_type=uf",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | where fwd_type=\"uf\" | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-type-servers",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Type: Heavy and Splunk servers match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Type: Heavy and Splunk servers)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.fwd_type=full",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | where fwd_type=\"full\" | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-severity-critical",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Severity: Critical match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Severity: Critical)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.severity=Critical",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=if(vulnerable=1 AND severity=\"Critical\" AND confidence=\"confirmed\", 1, 0) {{hosts}} | where fit=1 {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-severity-critical-any-confidence",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Severity: Critical, Confidence: All match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Severity: Critical, Confidence: All)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.severity=Critical&form.confidence=*",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=if(vulnerable=1 AND severity=\"Critical\", 1, 0) {{hosts}} | where fit=1 {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-hostname-prefix",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Hostname: p-fwd-uf-* match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Hostname: p-fwd-uf-*)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.host=p-fwd-uf-*",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | where like(lower(hostname), \"p-fwd-uf-%\") | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-version-from-10",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Version at or above 10.0 match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Version at or above 10.0)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.ver_min=10.0",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval major=tonumber(mvindex(split(version, \".\"), 0)), minor=tonumber(mvindex(split(version, \".\"), 1)) | where match(version, \"^\\d+\\.\\d+\") AND major>=10 | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-version-below-9-4",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Version below 9.4 match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Version below 9.4)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.ver_max=9.4",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval major=tonumber(mvindex(split(version, \".\"), 0)), minor=tonumber(mvindex(split(version, \".\"), 1)) | where match(version, \"^\\d+\\.\\d+\") AND (major<9 OR (major=9 AND minor<4)) | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-known-exploited",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Known exploited: yes match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Known exploited: yes)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.kev=yes",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=if(vulnerable=1 AND exploited=\"yes\" AND confidence=\"confirmed\", 1, 0) {{hosts}} | where fit=1 {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-excepted-only",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Exceptions: only excepted findings, Confidence: All match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Exceptions: only excepted findings, Confidence: All)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.exc=only&form.confidence=*",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=if(vulnerable=1 AND excepted=1, 1, 0) {{hosts}} | where fit=1 {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-status-vulnerable",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Status: Vulnerable match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Status: Vulnerable)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.status=Vulnerable",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=1 {{hosts}} | where status=\"Vulnerable\" {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-status-clear-or-unknown",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "normal",
+   "title": "Overview status cards with Status: Not affected + Version unknown match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Status: Not affected + Version unknown)",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.status=Not%20affected&form.status=Version%20unknown",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | eval fit=1 {{hosts}} | where status=\"Not affected\" OR status=\"Version unknown\" {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  },
+  {
+   "id": "hindsight-overview-no-host-matches",
+   "ticket": 13,
+   "app": "TA-hindsight",
+   "item": "screen:hindsight_overview",
+   "case": "empty",
+   "title": "Overview status cards with Hostname: no-such-host* (matches nothing) match a separate count of the findings",
+   "compare": "each_equal",
+   "shown": {
+    "what": "The four status cards on the Vulnerability Overview page (Hostname: no-such-host* (matches nothing))",
+    "page": {
+     "component": "p-mgmt",
+     "path": "/en-US/app/TA-hindsight/hindsight_overview?form.host=no-such-host*",
+     "find": [
+      "Vulnerable (\\d+)",
+      "Possibly affected (\\d+)",
+      "Version unknown (\\d+)",
+      "Not affected (\\d+)"
+     ]
+    }
+   },
+   "expected": {
+    "what": "Hosts by status, counted from the findings and exceptions collections without the app's macros",
+    "search": {
+     "component": "p-mgmt",
+     "app": "TA-hindsight",
+     "query": "{{rows}} | where like(lower(hostname), \"no-such-host%\") | eval fit=1 {{hosts}} {{cards}}"
+    },
+    "fields": [
+     "vulnerable",
+     "possible",
+     "unknown",
+     "not_affected"
+    ]
+   }
+  }
+ ]
+}
