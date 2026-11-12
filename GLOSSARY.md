@@ -47,7 +47,13 @@ The recorded status of one case (normal, empty, incorrect, permission, error, re
 A stored comparison between what an app shows and an independent reading of the same fact, run by the observer with the read-only account and without an AI model. Its result is pass, fail or unverified.
 
 **Reading**:
-One value taken for a check: a search result, an installed version, or a fixed value an app rule requires. Each reading is a step of the round's run.
+One value taken for a check: a search result, a value a page shows, an installed version, a container image tag, or a fixed value an app rule requires. Each reading is a step of the round's run.
+
+**Page reading**:
+A reading of what a Splunk Web page shows to the read-only account in a headless browser, taken once the page's searches have settled.
+
+**Known failure**:
+A failing check the owner has accepted with a reason. It keeps its fail result and coverage mark but no longer fails the round. The acceptance ends when the check's finding changes.
 
 **Independent reading**:
 The reading a check compares against. It comes from Splunk itself and never passes through the app under test.

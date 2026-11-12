@@ -99,7 +99,19 @@
     .cluster-title { font-size: .75rem; color: #b9cbe2; font-weight: 600; }
     .cluster-members { display: flex; flex-wrap: wrap; gap: .3rem; }
     .node { border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); padding: .25rem .45rem; font-size: .78rem; cursor: pointer; text-align: left; color: inherit; flex: 1 1 8rem; }
-    .node:hover { border-color: #8fb8e6; }
+    .node:hover, .node:focus-within { border-color: #8fb8e6; }
+    .node { display: flex; align-items: flex-start; gap: .2rem; padding: 0; cursor: default; }
+    .node .node-open { flex: 1; min-width: 0; background: none; border: 0; color: inherit; font: inherit; text-align: left; padding: .25rem .1rem .25rem .45rem; cursor: pointer; border-radius: .4rem; }
+    .node .node-info { background: none; border: 0; color: var(--muted); font-size: .8rem; padding: .2rem .35rem; cursor: pointer; border-radius: .3rem; }
+    .node .node-info:hover, .node .node-info:focus-visible { color: var(--text, #e6edf7); background: rgba(143, 184, 230, .15); }
+    .node .node-version { color: var(--muted); font-size: .68rem; margin-left: .3rem; }
+    .cluster-title button { background: none; border: 0; color: inherit; font: inherit; font-weight: 600; padding: 0; cursor: pointer; text-align: left; }
+    .cluster-title button:hover { text-decoration: underline; }
+    .arch.tracing .node:not(.linked), .arch.tracing .cluster:not(.linked) > .cluster-title { opacity: .35; }
+    .arch.tracing .cluster.linked .node { opacity: 1; }
+    .arch.tracing .arch-links path:not(.linked) { opacity: .08; }
+    .arch.tracing .arch-links path.linked { stroke-width: 2.6; opacity: 1; }
+    .node.linked, .cluster.linked { border-color: #8fb8e6; }
     .node .node-host { display: block; color: var(--muted); font-size: .68rem; }
     .node .badge { font-size: .62rem; margin-top: .15rem; }
     .node.compact { flex: 1 1 6.5rem; }
@@ -849,10 +861,21 @@
     catch (error) { checks.error = error.message; }
     loadChecks();
   }
+  async function acceptCheck(check, remove) {
+    const reason = remove ? '' : prompt(`Why does “${check.title}” stay failing? It will show as a known failure until its finding changes.`);
+    if (!remove && !(reason || '').trim()) return;
+    try { await post('/observer/api/checks/accept', remove ? {id: check.id, remove: true} : {id: check.id, reason}); checks.error = null; }
+    catch (error) { checks.error = error.message; }
+    loadChecks();
+  }
   function readingText(reading) {
     if (!reading) return null;
+    if (reading.page) return h('details', {}, h('summary', {}, reading.what || 'reading'),
+      h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, `page on ${reading.page.component}, read in a headless browser: ${reading.page.path}\nfinds: ${reading.page.find.join('  ·  ')}`),
+      h('div', {}, h('button', {class: 'small', type: 'button', title: 'Open this page, with these filters, in your own view', onclick: () => showScreen(reading.page.component, reading.page.path)}, 'Open this page')));
     const how = reading.search ? `search on ${(reading.search.components || [reading.search.component]).join(', ')}${reading.search.app ? ` in ${reading.search.app}` : ''}: ${reading.search.query}`
-      : reading.installed ? `installed version of ${reading.installed} on every component` : `fixed value ${JSON.stringify(reading.value)}`;
+      : reading.installed ? `installed version of ${reading.installed} on every component`
+      : reading.image ? `container image tag of ${reading.image.join(', ')}` : `fixed value ${JSON.stringify(reading.value)}`;
     return h('details', {}, h('summary', {}, reading.what || 'reading'), h('code', {class: 'fact-source', style: 'white-space:pre-wrap;word-break:break-word'}, how));
   }
   // The milestone: every inventoried feature of every app, by the state of its cases. A gap means no full-coverage claim.
@@ -880,22 +903,22 @@
     const data = checks.data;
     const running = Boolean(data && data.status.running);
     const parts = [h('p', {class: 'muted'}, 'Each check compares what an app shows with an independent reading of the same fact. The observer runs them itself',
-      data ? ` as ${data.account}` : '', ', read-only and without an AI model, about every six hours. A reading that cannot be taken leaves the check unverified, never passed. ',
+      data ? ` as ${data.account}` : '', ', read-only and without an AI model, only when you start them here. A reading that cannot be taken leaves the check unverified, never passed. ',
       h('button', {class: 'small primary', type: 'button', disabled: running || !data, onclick: () => runChecks()}, running ? 'Running…' : 'Run all now'))];
     if (checks.error) parts.push(h('div', {class: 'notice'}, checks.error));
     if (data) {
       for (const problem of data.problems) parts.push(h('div', {class: 'notice'}, `Check definition skipped: ${problem}`));
-      const state = check => check.last ? check.last.result : 'not run';
-      const counts = {pass: 0, fail: 0, unverified: 0, 'not run': 0};
+      const state = check => check.accepted ? 'known' : check.last ? check.last.result : 'not run';
+      const counts = {pass: 0, fail: 0, known: 0, unverified: 0, 'not run': 0};
       for (const check of data.checks) counts[state(check)] += 1;
-      const tone = {pass: 'ok', fail: 'bad', unverified: 'warn', 'not run': ''};
-      parts.push(h('div', {class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.4rem 0'}, ['', 'fail', 'unverified', 'pass', 'not run'].map(name =>
+      const tone = {pass: 'ok', fail: 'bad', known: 'warn', unverified: 'warn', 'not run': ''};
+      const label = {known: 'known failure'};
+      parts.push(h('div', {class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.4rem 0'}, ['', 'fail', 'known', 'unverified', 'pass', 'not run'].filter(name => name !== 'known' || counts.known).map(name =>
         h('button', {class: 'small', type: 'button', 'aria-pressed': String(checks.only === name), onclick: () => { checks.only = name; renderChecks(); }},
-          name ? `${name} ${counts[name]}` : `All ${data.checks.length}`))));
+          name ? `${label[name] || name} ${counts[name]}` : `All ${data.checks.length}`))));
       if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
         parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (./observer.sh app-roles in the lab checkout), then run them again.`));
-      const stale = 2 * (data.interval_seconds || 21600) * 1000;
-      const newFailures = data.checks.filter(check => check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
+      const newFailures = data.checks.filter(check => !check.accepted && check.last && check.last.result === 'fail' && check.last.was && check.last.since === check.last.at);
       if (newFailures.length) parts.push(h('div', {class: 'notice'}, `New failure${newFailures.length > 1 ? 's' : ''}: ${newFailures.map(check => check.title).join('; ')}`));
       parts.push(renderMilestone());
       const tickets = new Map();
@@ -909,13 +932,16 @@
         parts.push(h('table', {}, h('thead', {}, h('tr', {}, ['Check', 'Result', 'What was found', 'Checked', ''].map(text => h('th', {}, text)))),
           h('tbody', {}, group.map(check => h('tr', {},
             h('td', {}, h('div', {}, check.title), h('div', {class: 'muted'}, check.id, check.app ? ` · ${check.app}` : ''), readingText(check.shown), readingText(check.expected)),
-            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, state(check)),
-              check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < 2 * stale ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
+            h('td', {}, h('span', {class: `badge ${tone[state(check)]}`}, label[state(check)] || state(check)),
+              check.accepted ? h('div', {class: 'muted'}, `You accepted this ${stamp(check.accepted.at)}: ${check.accepted.reason}`) : null,
+              !check.accepted && check.last && check.last.result === 'fail' && check.last.was && check.last.since === check.last.at ? h('span', {class: 'badge bad', style: 'margin-left:.3rem', title: `Was ${check.last.was} before`}, 'new failure') : null,
               check.last && check.last.since !== check.last.at ? h('div', {class: 'muted'}, 'since ', stamp(check.last.since)) : null),
             h('td', {style: 'word-break:break-word'}, check.last ? check.last.detail : ''),
-            h('td', {}, check.last ? [stamp(check.last.at), Date.now() - Date.parse(check.last.at) > stale ? h('span', {class: 'badge warn', style: 'margin-left:.3rem', title: 'Older than two scheduled rounds'}, 'stale') : null, ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
+            h('td', {}, check.last ? [stamp(check.last.at), ' ', h('a', {href: '#', title: 'Open the run that holds these readings',
               onclick: event => { event.preventDefault(); setAssistantOpen(true); selectRun(check.last.run_id); }}, `steps ${check.last.steps.map(seq => `#${seq}`).join(', ') || `#${check.last.step}`}`)] : ''),
-            h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run')))))));
+            h('td', {}, h('button', {class: 'small', type: 'button', disabled: running, onclick: () => runChecks([check.id])}, 'Run'),
+              check.accepted ? h('button', {class: 'small', type: 'button', style: 'margin-top:.3rem', onclick: () => acceptCheck(check, true)}, 'Undo accept')
+                : check.last && check.last.result === 'fail' ? h('button', {class: 'small', type: 'button', style: 'margin-top:.3rem', title: 'You know about this failure and why it stays', onclick: () => acceptCheck(check)}, 'Accept as known') : null))))));
       }
       if (!data.checks.length) parts.push(h('div', {class: 'notice'}, 'No checks are defined.'));
     } else if (checks.loading) parts.push(h('div', {class: 'muted'}, 'Loading…'));
@@ -982,7 +1008,7 @@
   }
   function renderArchitecture() {
     const wrapper = h('div', {});
-    wrapper.append(h('p', {class: 'muted'}, 'Drawn from discovery (', stamp(lab.checked_at), '): Splunk roles and clusters from each splunkd, load balancer backends from HAProxy, forwarder outputs from btool, and federated providers from the HQ search heads. Click a box for its details and history.'));
+    wrapper.append(h('p', {class: 'muted'}, 'Drawn from discovery (', stamp(lab.checked_at), '): Splunk roles and clusters from each splunkd, load balancer backends from HAProxy, forwarder outputs from btool, and federated providers from the HQ search heads. Click a box to open its live screen; ⓘ opens its details and history. Point at a box to trace what it connects to.'));
     wrapper.append(h('div', {class: 'legend'}, Object.values(LINKS).map(link => h('span', {},
       svgLine(link), link.label))));
     const rows = [];
@@ -1007,7 +1033,7 @@
           const groupMembers = group.members.filter(id => byId(id) && inTier.some(component => component.id === id));
           if (!groupMembers.length) continue;
           const ordered = [...groupMembers].sort((a, b) => (a === group.manager ? -1 : b === group.manager ? 1 : a.localeCompare(b)));
-          cell.append(h('div', {class: 'cluster', 'data-group': group.id}, h('div', {class: 'cluster-title'}, groupName(group)),
+          cell.append(h('div', {class: 'cluster', 'data-group': group.id}, h('div', {class: 'cluster-title'}, clusterTitle(group)),
             h('div', {class: 'cluster-members'}, ordered.map(id => archNode(byId(id), true)))));
         }
         const loose = inTier.filter(component => !groupedIds.has(component.id))
@@ -1031,10 +1057,47 @@
     svg.append(line);
     return svg;
   }
+  // A box opens the component's live screen on the wall: Splunk Web where it has one, its console otherwise.
   function archNode(component, compact) {
-    return h('button', {class: `node${compact ? ' compact' : ''}`, type: 'button', 'data-node': component.id, title: `${plainName(component)} (${component.id})`,
-      onclick: () => openDrawer(component.id)},
-      component.owner_name || plainName(component, true), h('span', {class: 'node-host'}, component.id), stateBadge(component));
+    const version = (component.facts.splunk_version || {}).value;
+    const opens = isWeb(component) ? 'Open its live Splunk screen' : 'Open its live view';
+    const node = h('div', {class: `node${compact ? ' compact' : ''}`, 'data-node': component.id},
+      h('button', {class: 'node-open', type: 'button', title: `${plainName(component)} (${component.id}). ${opens}.`, onclick: () => showScreen(component.id)},
+        component.owner_name || plainName(component, true), h('span', {class: 'node-host'}, component.id, version ? h('span', {class: 'node-version'}, version) : null), stateBadge(component)),
+      h('button', {class: 'node-info', type: 'button', title: 'Details and history', 'aria-label': `Details and history of ${component.id}`, onclick: () => openDrawer(component.id)}, 'ⓘ'));
+    node.addEventListener('mouseenter', () => traceLinks(`node:${component.id}`));
+    node.addEventListener('focusin', () => traceLinks(`node:${component.id}`));
+    node.addEventListener('mouseleave', () => traceLinks(null));
+    node.addEventListener('focusout', () => traceLinks(null));
+    return node;
+  }
+  // A cluster's title opens the screen that shows the cluster itself: indexer clustering on its
+  // manager, or search head clustering on one of its members.
+  function clusterTitle(group) {
+    const indexers = group.type === 'indexer_cluster';
+    const target = indexers ? group.manager : [group.captain, ...group.members].find(id => byId(id) && isWeb(byId(id)));
+    if (!target || !byId(target) || !isWeb(byId(target))) return groupName(group);
+    const path = indexers ? '/en-US/manager/system/clustering' : '/en-US/manager/system/search_head_clustering';
+    return h('button', {type: 'button', title: `Open ${indexers ? 'Indexer clustering' : 'Search head clustering'} on ${target}`, onclick: () => showScreen(target, path)}, groupName(group));
+  }
+  // Pointing at a box keeps its links and the boxes at their other ends, and fades the rest.
+  function traceLinks(key) {
+    const grid = panes.architecture.querySelector('.arch');
+    if (!grid) return;
+    grid.querySelectorAll('.linked').forEach(item => item.classList.remove('linked'));
+    grid.classList.toggle('tracing', Boolean(key));
+    if (!key) return;
+    const id = key.slice(5);
+    const group = lab.groups.find(item => item.members.includes(id));
+    const own = new Set([key, group ? `group:${group.id}` : key]);
+    const find = name => name.startsWith('group:') ? grid.querySelector(`[data-group="${CSS.escape(name.slice(6))}"]`) : grid.querySelector(`[data-node="${CSS.escape(name.slice(5))}"]`);
+    find(key)?.classList.add('linked');
+    for (const path of grid.querySelectorAll('.arch-links path[data-from]')) {
+      if (!own.has(path.dataset.from) && !own.has(path.dataset.to)) continue;
+      path.classList.add('linked');
+      find(path.dataset.from)?.classList.add('linked');
+      find(path.dataset.to)?.classList.add('linked');
+    }
   }
   // Links between boxes: one line per pair of drawn boxes, so a forwarder sending to every
   // member of a cluster gets a single line to the cluster.
@@ -1092,7 +1155,9 @@
       }
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       Object.entries({d: `M ${x1} ${y1} C ${c1}, ${c2}, ${x2} ${y2}`, fill: 'none', stroke: style.color, 'stroke-width': 1.6,
-        'stroke-dasharray': style.dash, opacity: .85, 'marker-end': `url(#arrow-${link.type})`}).forEach(([k, v]) => path.setAttribute(k, v));
+        'stroke-dasharray': style.dash, opacity: .85, 'marker-end': `url(#arrow-${link.type})`,
+        'data-from': link.from, 'data-to': link.to}).forEach(([k, v]) => path.setAttribute(k, v));
+      path.append(Object.assign(document.createElementNS('http://www.w3.org/2000/svg', 'title'), {textContent: `${link.from.split(':').pop()} → ${link.to.split(':').pop()}: ${style.label}`}));
       svg.append(path);
     }
     const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
@@ -1583,8 +1648,8 @@
       }
       case 'check': {
         const tone = {pass: 'ok', fail: 'bad', unverified: 'warn'}[item.result] || '';
-        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ ${item.title}`), h('span', {class: `badge ${tone}`}, item.result), time),
-          h('div', {class: 'muted'}, item.detail),
+        return h('div', {class: 'step tool'}, h('div', {class: 'row'}, h('strong', {}, `☑ ${item.title}`), h('span', {class: `badge ${item.accepted ? 'warn' : tone}`}, item.accepted ? 'known failure' : item.result), time),
+          h('div', {class: 'muted'}, item.detail, item.accepted ? ` · accepted by the owner: ${item.accepted}` : ''),
           item.evidence_steps?.length ? h('div', {class: 'fact-source'}, `Steps ${item.evidence_steps.map(seq => `#${seq}`).join(', ')} · ${item.check}`) : null);
       }
       case 'coverage': {

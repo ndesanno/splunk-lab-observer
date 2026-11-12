@@ -50,7 +50,7 @@ class CheckRoundTest(ChecksFixture):
         self.assertIn("savedsearch", readings[0]["input"]["search"])
         mark = self.coverage.marks("TA-hindsight")[0]
         self.assertEqual((mark["item"], mark["case"], mark["status"], mark["verdict"], mark["by"], mark["run_id"]),
-                         ("screen:hindsight_overview", "normal", "tested", "pass", "scheduled check", run["id"]))
+                         ("screen:hindsight_overview", "normal", "tested", "pass", "check", run["id"]))
         self.assertEqual(mark["evidence"], result["evidence_steps"])
         self.assertEqual(self.checks.summary()["checks"][-1]["last"]["result"], "pass")
 
@@ -161,6 +161,115 @@ class CheckRoundTest(ChecksFixture):
         self.assertTrue(any("No coverage mark" in item.get("text", "") for item in run["events"]))
 
 
+PAGE = {"what": "the page's cards", "page": {"component": "p-sh1", "path": "/en-US/app/TA-hindsight/hindsight_overview?form.fwd_type=uf",
+                                               "find": ["Vulnerable (\\d+)", "Not affected (\\d+)"]}}
+COUNTED = {"what": "a separate count", "search": {"component": "p-sh1", "query": "| rest /services/x {{tail}}"}, "fields": ["vulnerable", "ok"]}
+
+
+class PageReadingTest(ChecksFixture):
+    def setUp(self):
+        super().setUp()
+        self.asked = []
+        self.shows = {"values": ["7", "2"], "url": "/en-US/app/TA-hindsight/hindsight_overview", "read_at": "2026-11-11T00:00:00Z"}
+        self.checks.read_pages = lambda targets: self.asked.append(targets) or {target["key"]: self.shows for target in targets}
+        self.source.answers[("p-sh1", "| rest")] = [{"vulnerable": "7", "ok": "2"}]
+
+    def define_page(self, *items):
+        (self.config / "checks.json").write_text(json.dumps({"fragments": {"tail": "| stats count"}, "checks": list(items)}))
+
+    def page_check(self, **changes):
+        return check(shown=PAGE, expected=COUNTED, compare="each_equal") | changes
+
+    def test_what_the_page_shows_is_compared_value_by_value_with_a_separate_count(self):
+        self.define_page(self.page_check(), self.page_check(id="second-page"))
+        run, results = self.round(["shown-count", "second-page"])
+        self.assertEqual(results["shown-count"]["result"], "pass")
+        self.assertEqual(results["shown-count"]["detail"], "shown 7, 2; expected 7, 2")
+        self.assertEqual(len(self.asked), 1)  # one browser reads every page of the round
+        self.assertEqual([target["key"] for target in self.asked[0]], ["shown-count|shown", "second-page|shown"])
+        readings = [item for item in run["events"] if item["type"] == "tool"]
+        self.assertIn("headless Chromium as lab_observer", readings[0]["source"])
+        self.assertEqual(readings[0]["input"]["page"], PAGE["page"]["path"])
+        self.assertEqual(readings[1]["input"]["search"], "| rest /services/x | stats count")  # the fragment is filled in
+
+    def test_the_search_jobs_a_page_read_leaves_are_removed_before_the_comparisons(self):
+        order = []
+        self.checks.read_pages = lambda targets: order.append("pages") or {target["key"]: self.shows for target in targets}
+        self.source.forget_searches = lambda component, since: order.append(f"forget {component}") or 12
+        search = self.source.splunk_search
+        self.source.splunk_search = lambda *args, **kwargs: order.append("search") or search(*args, **kwargs)
+        self.define_page(self.page_check())
+        run, results = self.round(["shown-count"])
+        self.assertEqual(order, ["pages", "forget p-sh1", "search"])
+        self.assertTrue(any("Removed 12 search job(s)" in item.get("text", "") for item in run["events"]))
+        self.assertEqual(results["shown-count"]["result"], "pass")
+
+    def test_a_page_that_shows_another_number_fails(self):
+        self.shows = self.shows | {"values": ["6", "2"]}
+        self.define_page(self.page_check())
+        _run, results = self.round(["shown-count"])
+        self.assertEqual((results["shown-count"]["result"], results["shown-count"]["detail"]), ("fail", "shown 6, 2; expected 7, 2"))
+
+    def test_a_page_that_could_not_be_read_is_unverified(self):
+        self.define_page(self.page_check())
+        for reader, said in ((lambda targets: {target["key"]: {"values": [None, "2"], "error": "the page did not settle"} for target in targets}, "did not settle"),
+                             (lambda targets: (_ for _ in ()).throw(RuntimeError("podman is not there")), "gave no reading"),
+                             (None, "no page reader")):
+            self.checks.read_pages = reader
+            run, results = self.round(["shown-count"])
+            self.assertEqual(results["shown-count"]["result"], "unverified")
+            self.assertIn(said, results["shown-count"]["detail"])
+        self.assertEqual(run["verdict"]["verdict"], "inconclusive")
+
+    def test_a_malformed_page_or_fragment_is_refused(self):
+        bad_path = self.page_check(id="bad-path", shown={"page": {"component": "p-sh1", "path": "/../etc", "find": ["x"]}})
+        bad_find = self.page_check(id="bad-find", shown={"page": {"component": "p-sh1", "path": "/en-US/app/x/y", "find": ["("]}})
+        no_fragment = self.page_check(id="no-fragment", expected=COUNTED | {"search": {"component": "p-sh1", "query": "| rest {{missing}}"}})
+        self.define_page(bad_path, bad_find, no_fragment)
+        checks, problems = load_definitions(self.config)
+        self.assertFalse({"bad-path", "bad-find", "no-fragment"} & {item["id"] for item in checks})
+        self.assertEqual(len([text for text in problems if text.startswith("checks.json")]), 3)
+        self.assertTrue(any("fragment" in text for text in problems))
+
+
+class KnownFailureTest(ChecksFixture):
+    def setUp(self):
+        super().setUp()
+        self.define(check())
+
+    def test_only_a_failing_check_can_be_accepted_and_needs_a_reason(self):
+        self.round(["shown-count"])
+        self.assertFalse(self.checks.accept("shown-count", "it passes"))
+        self.source.answers[("p-sh1", "| rest")] = [{"value": "13"}]
+        self.round(["shown-count"])
+        self.assertFalse(self.checks.accept("shown-count", "  "))
+        self.assertTrue(self.checks.accept("shown-count", "Waiting for the registry migration"))
+
+    def test_an_accepted_failure_stays_recorded_but_no_longer_fails_the_round(self):
+        self.source.answers[("p-sh1", "| rest")] = [{"value": "13"}]
+        run, _results = self.round(["shown-count"])
+        self.assertEqual(run["verdict"]["verdict"], "fail")
+        self.checks.accept("shown-count", "Waiting for the registry migration")
+        run, results = self.round(["shown-count"])
+        self.assertEqual(results["shown-count"]["result"], "fail")  # the finding itself is not hidden
+        self.assertEqual(results["shown-count"]["accepted"], "Waiting for the registry migration")
+        self.assertEqual(run["verdict"]["verdict"], "inconclusive")
+        self.assertIn("1 of the failures is known and accepted", run["verdict"]["summary"])
+        self.assertEqual(self.coverage.marks("TA-hindsight")[0]["verdict"], "fail")
+        self.assertEqual(self.checks.summary()["checks"][-1]["accepted"]["reason"], "Waiting for the registry migration")
+
+    def test_acceptance_ends_when_the_finding_changes(self):
+        self.source.answers[("p-sh1", "| rest")] = [{"value": "13"}]
+        self.round(["shown-count"])
+        self.checks.accept("shown-count", "Known")
+        self.source.answers[("p-sh1", "| rest")] = [{"value": "14"}]  # still failing, but differently
+        run, results = self.round(["shown-count"])
+        self.assertIsNone(results["shown-count"]["accepted"])
+        self.assertEqual(run["verdict"]["verdict"], "fail")
+        self.assertIsNone(self.checks.summary()["checks"][-1]["accepted"])
+        self.assertFalse(self.checks.unaccept("shown-count"))
+
+
 class ChecksApiTest(ChecksFixture):
     def setUp(self):
         super().setUp()
@@ -195,6 +304,17 @@ class ChecksApiTest(ChecksFixture):
             time.sleep(0.05)
         self.assertEqual(mine["last"]["result"], "pass")
         self.assertTrue(mine["last"]["run_id"])
+
+    def test_the_owner_accepts_a_known_failure_and_takes_it_back(self):
+        self.assertEqual(call(self.port, "POST", "/observer/api/checks/accept", {"id": "shown-count", "reason": "Known"})[0], 409)
+        self.source.answers[("p-sh1", "| rest")] = [{"value": "13"}]
+        self.round(["shown-count"])
+        self.assertEqual(call(self.port, "POST", "/observer/api/checks/accept", {"id": "shown-count", "reason": "Known"})[0], 200)
+        _status, body = call(self.port, "GET", "/observer/api/checks")
+        self.assertEqual(next(item for item in body["checks"] if item["id"] == "shown-count")["accepted"]["reason"], "Known")
+        self.assertEqual(call(self.port, "POST", "/observer/api/checks/accept", {"id": "shown-count", "remove": True})[0], 200)
+        _status, body = call(self.port, "GET", "/observer/api/checks")
+        self.assertIsNone(next(item for item in body["checks"] if item["id"] == "shown-count")["accepted"])
 
 
 class FixtureGuardTest(ChecksFixture):

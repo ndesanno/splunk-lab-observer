@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 from observer.store import utc_now
@@ -111,6 +112,26 @@ class PodmanSplunkSource:
                                          headers={"Authorization": self._authorization})
         with urllib.request.urlopen(request, timeout=90) as response:
             return json.load(response).get("results", []), source
+
+    def forget_searches(self, component, since_epoch):
+        """Delete the read-only account's own search jobs started on a component since a moment.
+        A page read in a browser leaves a dozen jobs that would count against the account's search
+        disk quota until they expire; nothing else of the lab is touched. Returns how many went."""
+        listing, _source = self.splunk_get(component, "/services/search/jobs", count="0")
+        gone = 0
+        for job in listing.get("entry", []):
+            started = datetime.fromisoformat(job["published"]).timestamp()
+            if job.get("author") != self.username or started < since_epoch or job["content"].get("isSaved"):
+                continue
+            sid = urllib.parse.quote(job["content"]["sid"], safe="")
+            request = urllib.request.Request(f"{self.router}/mgmt/{component}/services/search/jobs/{sid}", method="DELETE",
+                                             headers={"Authorization": self._authorization})
+            try:
+                with urllib.request.urlopen(request, timeout=10):
+                    gone += 1
+            except urllib.error.HTTPError:
+                pass  # already expired, or not ours to remove
+        return gone
 
     def container_action(self, component, action):
         """Start, stop, or restart one lab container. Only an owner-approved assistant step calls this."""

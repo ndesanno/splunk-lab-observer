@@ -19,6 +19,7 @@ from observer.store import utc_now
 BASE_IMAGE = "mcr.microsoft.com/playwright/python:v1.48.0-jammy"
 IMAGE = "localhost/lab-observer-capture:1.48.0"
 SCRIPT = Path(__file__).with_name("capture_browser.py")
+PAGE_SCRIPT = Path(__file__).with_name("page_browser.py")
 CAPTURE_INTERVAL_SECONDS = 10 * 60
 KEEP_SECONDS = 48 * 60 * 60
 
@@ -122,6 +123,42 @@ class Capture:
             except ValueError:
                 continue
         raise RuntimeError(result.stderr.strip()[-300:] or "no screenshot")
+
+    def read_pages(self, targets):
+        """What each page shows to the read-only account: {key: {"values", "url", "read_at", "error"}}.
+        A target is {"key", "component", "path", "find": [regular expressions]}; all pages are read by
+        one headless browser, signed in once per component."""
+        if not targets:
+            return {}
+        self._ensure_image()
+        work = Path(tempfile.mkdtemp(dir=self.directory.parent, prefix=".pages-"))
+        try:
+            (work / "targets.json").write_text(json.dumps(targets), encoding="utf-8")
+            env = work / "env"
+            env.touch(mode=0o600)
+            env.write_text(f"OBSERVER_USER={self.lab.source.username}\nOBSERVER_PASSWORD={self.lab.source.password_for_capture()}\n")
+            try:
+                result = subprocess.run(
+                    ["podman", "run", "--rm", "--network", "host", "--memory", "1500m", "--env-file", str(env),
+                     "-v", f"{PAGE_SCRIPT}:/page_browser.py:ro,Z", "-v", f"{work / 'targets.json'}:/targets.json:ro,Z",
+                     IMAGE, "python3", "/page_browser.py", self.lab.source.router, "/targets.json"],
+                    capture_output=True, text=True, timeout=90 * len(targets) + 120)
+            finally:
+                env.unlink()
+        finally:
+            for path in work.iterdir():
+                path.unlink()
+            work.rmdir()
+        readings = {}
+        for line in result.stdout.splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            readings[item.pop("key")] = item
+        if not readings and result.returncode != 0:
+            raise RuntimeError(result.stderr.strip()[-300:] or "the page reader did not run")
+        return readings
 
     def path_for(self, file_name):
         """Resolve a capture file name from an observation, refusing anything outside the directory."""

@@ -54,6 +54,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS page_requests (
                     id TEXT PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL, ok INTEGER, result TEXT,
                     created_at TEXT NOT NULL, done_at TEXT);
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, decision TEXT NOT NULL, note TEXT,
+                    created_at TEXT NOT NULL, decided_at TEXT);
                 CREATE TABLE IF NOT EXISTS page_watch (run_id TEXT PRIMARY KEY, seen REAL NOT NULL, paused INTEGER NOT NULL DEFAULT 0);
             """)
             # An observation that repeats the one before it is not stored again; the stored row
@@ -256,6 +259,24 @@ class Store:
     def close_page_request(self, request_id, status):
         with self.lock, self.db:
             self.db.execute("UPDATE page_requests SET status = ? WHERE id = ? AND status = 'pending'", (status, request_id))
+
+    def add_approval(self, approval_id, run_id):
+        with self.lock, self.db:
+            self.db.execute("INSERT INTO approvals (id, run_id, decision, created_at) VALUES (?, ?, 'pending', ?)",
+                            (approval_id, run_id, utc_now()))
+
+    def decide_approval(self, run_id, approval_id, decision, note=None):
+        """The owner's decision; False if that approval is not waiting for one."""
+        with self.lock, self.db:
+            cursor = self.db.execute("UPDATE approvals SET decision = ?, note = ?, decided_at = ? "
+                                     "WHERE id = ? AND run_id = ? AND decision = 'pending'",
+                                     (decision, note, utc_now(), approval_id, run_id))
+        return cursor.rowcount == 1
+
+    def approval(self, approval_id):
+        with self.lock:
+            row = self.db.execute("SELECT decision, note FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        return {"decision": row["decision"], "note": row["note"]} if row else None
 
     def get_setting(self, name, default=None):
         with self.lock:

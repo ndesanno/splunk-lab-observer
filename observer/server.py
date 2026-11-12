@@ -313,6 +313,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self._background, args=(lambda: self.server.checks.run_round(ids, reason="asked for by the owner"),),
                              daemon=True).start()
             self._json(202, {"started": True})
+        elif parts == ["api", "checks", "accept"] and post and self.server.checks:
+            body = self._read_json()
+            if body is None:
+                return
+            if body.get("remove"):
+                done = self.server.checks.unaccept(str(body.get("id")))
+            else:
+                done = self.server.checks.accept(str(body.get("id")), body.get("reason"))
+            self._json(200 if done else 409, {"done": done} if done else {"error": "Only a check that is failing now can be accepted, with a reason"})
         elif parts[:2] == ["api", "assistant"] and self.server.assistant:
             self._assistant_route(parts[2:], query, get, post)
         elif len(parts) == 3 and parts[:2] == ["api", "packages"] and get:
@@ -434,8 +443,9 @@ class ObserverHandler(BaseHTTPRequestHandler):
             body = self._read_json()
             if body is None:
                 return
-            run = assistant.runs.get(parts[1])
-            if run is None or not run.decide(parts[3], body.get("decision"), body.get("note")):
+            decision = {"approve": "approved", "deny": "declined"}.get(body.get("decision"))
+            note = str(body.get("note") or "")[:500] or None
+            if decision is None or not self.server.store.decide_approval(parts[1], parts[3], decision, note):
                 self._json(409, {"error": "no_pending_approval"})
                 return
             self._json(200, {"decided": True})
@@ -770,8 +780,7 @@ def main():
     operator = OperatorAccount(operator_file) if operator_file.exists() else None
     coverage = Coverage(store, lab, args.config_dir)
     assistant = Assistant(lab, store, args.config_dir, monitor, operator, capture, coverage)
-    checks = Checks(lab, store, coverage, args.config_dir, assistant.lab_state)
-    monitor.checks = checks
+    checks = Checks(lab, store, coverage, args.config_dir, assistant.lab_state, capture.read_pages)
     options = dict(lab=lab, store=store, capture=capture, monitor=monitor, assistant=assistant, coverage=coverage, checks=checks)
     if args.lan_address:
         address = private_lan_address(args.lan_address)
