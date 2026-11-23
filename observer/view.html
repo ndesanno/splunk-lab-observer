@@ -893,7 +893,7 @@
         h('button', {class: 'small', type: 'button', 'aria-pressed': String(checks.only === name), onclick: () => { checks.only = name; renderChecks(); }},
           name ? `${name} ${counts[name]}` : `All ${data.checks.length}`))));
       if (data.checks.some(check => check.last && check.last.result === 'unverified' && /Unable to find saved search|insufficient permission|not authorized|HTTP 40[34]/i.test(check.last.detail)))
-        parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Give that account the app’s read-only role (./observer.sh app-roles in the lab checkout), then run them again.`));
+        parts.push(h('div', {class: 'notice'}, `Some checks are unverified because ${data.account} cannot see an app’s saved searches or lookups. Add the app’s read-only role to the lab_observer role, then run them again.`));
       const stale = 2 * (data.interval_seconds || 21600) * 1000;
       const newFailures = data.checks.filter(check => check.last && check.last.result === 'fail' && check.last.was && Date.now() - Date.parse(check.last.since) < stale);
       if (newFailures.length) parts.push(h('div', {class: 'notice'}, `New failure${newFailures.length > 1 ? 's' : ''}: ${newFailures.map(check => check.title).join('; ')}`));
@@ -1702,7 +1702,7 @@
       return node;
     }).filter(Boolean);
     if (liveRun() && assistant.run.status === 'running') steps.push(h('div', {class: 'muted'}, checkRun() ? 'Checks are running…' : terminalRun() ? 'Claude Code is working in the terminal…' : 'Claude is working…'));
-    if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is p-hq-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
+    if (!steps.length) steps.push(h('div', {class: 'muted'}, 'Ask a question about the lab (“Why is splunk-sh1 red?”), or ask for something to be done (“Restart the alpha indexers one at a time and show me the cluster recovering”). Claude opens the screens it is looking at in this window.'));
     trail.replaceChildren(...steps);
     if (nearBottom) trail.scrollTop = trail.scrollHeight;
     const parts = [];

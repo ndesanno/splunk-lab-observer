@@ -90,8 +90,8 @@ class AssistantFixture(unittest.TestCase):
 class AssistantRunTest(AssistantFixture):
     def test_read_only_run_records_evidence_shows_screens_and_keeps_raw_events_local(self):
         self.api.script = [
-            message([{"type": "text", "text": "Opening Hindsight."},
-                     tool_use("t1", "show_screen", {"component": "p-sh1", "path": "/en-US/app/TA-hindsight/hindsight_overview"}),
+            message([{"type": "text", "text": "Opening Example."},
+                     tool_use("t1", "show_screen", {"component": "p-sh1", "path": "/en-US/app/TA-example/example_overview"}),
                      tool_use("t2", "run_search", {"component": "p-sh1", "query": "index=_internal ERROR"}),
                      tool_use("t3", "run_search", {"component": "p-sh1", "query": "index=_internal ERROR | stats count by component"}),
                      tool_use("t4", "splunk_rest_get", {"component": "p-sh1", "path": "/services/storage/passwords"}),
@@ -128,7 +128,7 @@ class AssistantRunTest(AssistantFixture):
         events = run.record["events"]
         display = [item for item in events if item["type"] == "display"]
         self.assertEqual(display[0]["component"], "p-sh1")
-        self.assertEqual(display[0]["path"], "/en-US/app/TA-hindsight/hindsight_overview")
+        self.assertEqual(display[0]["path"], "/en-US/app/TA-example/example_overview")
         tools = [item for item in events if item["type"] == "tool"]
         self.assertEqual([item["status"] for item in tools], ["ok", "error", "ok", "error", "ok"])
         search = tools[2]
@@ -587,7 +587,7 @@ class RunEvidenceTest(AssistantFixture):
         self.wait(run, self.finished)
         state = {item["id"]: item for item in run.record["lab_state"]["components"]}
         self.assertEqual(state["p-sh1"]["version"], "10.2.4")
-        self.assertEqual(state["p-sh1"]["apps"]["TA-hindsight"], "0.8.1")
+        self.assertEqual(state["p-sh1"]["apps"]["TA-example"], "0.8.1")
         self.assertEqual(state["p-uf"]["version"], "10.2.4")  # from the image tag
         shot = next(item for item in run.record["events"] if item["type"] == "evidence")
         self.assertEqual(self.capture.shots, [("p-sh1", "/en-US/app/search/datasets")])

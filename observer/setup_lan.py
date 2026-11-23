@@ -18,7 +18,7 @@ DEFAULT_CONFIG_DIR = Path.home() / ".config" / "splunk-lab-observer"
 def private_lan_address(value):
     address = ipaddress.ip_address(value)
     if address.version != 4 or address.is_unspecified or address.is_multicast or not (address.is_private or address.is_loopback):
-        raise ValueError("Use one private IPv4 address on the mini PC")
+        raise ValueError("Use one private IPv4 address of this machine")
     return str(address)
 
 
@@ -93,7 +93,7 @@ def certificate_fingerprint(certfile):
 
 def main():
     parser = argparse.ArgumentParser(description="Set up HTTPS and owner login for one LAN address")
-    parser.add_argument("--address", required=True, help="Private IPv4 address of the mini PC")
+    parser.add_argument("--address", required=True, help="Private IPv4 address of this machine")
     parser.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR)
     args = parser.parse_args()
     paths = provision_lan_credentials(args.config_dir, args.address)

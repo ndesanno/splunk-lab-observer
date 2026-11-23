@@ -32,7 +32,8 @@ BUILTIN_SCREENS = [
     ("Settings", "Indexer clustering", "/en-US/manager/system/clustering", {"cluster_manager", "cluster_peer", "cluster_search_head"}),
     ("Settings", "Forwarding and receiving", "/en-US/manager/launcher/forwardreceive", None),
 ]
-LAB_NETWORK = "pulseprod"
+# Only containers on this podman network are part of the lab ("network" in splunk.json); None takes all.
+LAB_NETWORK = None
 
 
 def fact(value, source, checked_at):
@@ -46,7 +47,7 @@ def classify(image, name):
     if "universalforwarder" in image:
         return "universal_forwarder"
     if "haproxy" in image:
-        return "observer_router" if name == "p-observer-router" else "load_balancer"
+        return "observer_router" if name.endswith("observer-router") else "load_balancer"
     if "alpine" in image:
         return "data_generator"
     return "container"
@@ -63,7 +64,7 @@ class PodmanSplunkSource:
         self.username = config["username"]
         self._authorization = "Basic " + base64.b64encode(f"{config['username']}:{config['password']}".encode()).decode()
         self.router = config.get("router", "http://127.0.0.1:8190").rstrip("/")
-        self.network = network
+        self.network = config.get("network", network)
 
     def password_for_capture(self):
         """Only the preview capture needs the password itself, to sign in to Splunk Web."""
@@ -73,7 +74,7 @@ class PodmanSplunkSource:
         result = subprocess.run(["podman", "ps", "-a", "--format", "json"], capture_output=True, text=True, timeout=30, check=True)
         containers = []
         for item in json.loads(result.stdout or "[]"):
-            if self.network not in (item.get("Networks") or []):
+            if self.network and self.network not in (item.get("Networks") or []):
                 continue
             status = item.get("Status", "")
             health = next((word for word in ("unhealthy", "healthy", "starting") if f"({word})" in status), None)
@@ -275,7 +276,7 @@ class Lab:
             components[name] = {
                 "id": name,
                 "kind": kind,
-                # Every Splunk Enterprise instance serves Splunk Web under /lab/<name>/ (see the lab's observer.sh).
+                # Every Splunk Enterprise instance serves Splunk Web under /lab/<name>/ (see lab-setup/observer-lab.sh web).
                 "web_path": f"/lab/{name}/" if kind == "splunk_enterprise" else None,
                 "screens": [],
                 "facts": {

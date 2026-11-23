@@ -5,10 +5,10 @@ command adds a step to a run in the observer's store; an open observer page foll
 session, opens each screen in the focused view, and keeps the trail with the in-page runs.
 
     python -m observer.terminal start "Restart the alpha indexers"
-    python -m observer.terminal show p-alpha-cm /en-US/manager/system/clustering
+    python -m observer.terminal show splunk-cm /en-US/manager/system/clustering
     python -m observer.terminal note "Peers are back; replication factor met."
-    python -m observer.terminal did "podman restart p-alpha-idx1" --result "running after 95 s"
-    python -m observer.terminal coverage TA-hindsight screen:hindsight_overview normal pass --steps 3 4 \
+    python -m observer.terminal did "podman restart splunk-idx1" --result "running after 95 s"
+    python -m observer.terminal coverage my_app screen:my_app_overview normal pass --steps 3 4 \
         --note "Overview lists the 8 forwarders with findings"
     python -m observer.terminal end "All three indexers restarted; cluster healthy."
 
@@ -16,9 +16,9 @@ The owner watches the same Splunk session the work uses: `signin` signs the owne
 as the lab_operator test account, and `read`, `click`, `type` and `select` are carried out by the
 owner's open observer page in that view, each element highlighted. They fail if no page is open.
 
-    python -m observer.terminal signin p-hq-sh1 /en-US/app/federation_pulse_hq/pulse_hq_overview
-    python -m observer.terminal read p-hq-sh1
-    python -m observer.terminal click p-hq-sh1 e12 --why "Open the Members tab"
+    python -m observer.terminal signin splunk-sh1 /en-US/app/my_app/my_app_overview
+    python -m observer.terminal read splunk-sh1
+    python -m observer.terminal click splunk-sh1 e12 --why "Open the Users tab"
 
 Commands never carry credentials; write only what the owner may see.
 """
@@ -81,7 +81,7 @@ def main(argv=None):
     did.add_argument("--failed", action="store_true")
     mark = commands.add_parser("coverage", help="mark a case of an app feature or screen (see the Coverage tab)")
     mark.add_argument("app")
-    mark.add_argument("item", help="item id from the coverage map, e.g. screen:hindsight_overview")
+    mark.add_argument("item", help="item id from the coverage map, e.g. screen:my_app_overview")
     mark.add_argument("case", choices=CASES)
     mark.add_argument("result", choices=["pass", "fail", "unverified", "n/a"])
     mark.add_argument("--steps", type=int, nargs="*", default=[], help="step numbers in this session that show it")
@@ -109,7 +109,7 @@ def main(argv=None):
     upload = commands.add_parser("upload", help="choose a package from the observer's packages folder in a file field")
     upload.add_argument("component")
     upload.add_argument("ref")
-    upload.add_argument("file", help="file name in <data dir>/packages, e.g. federation_pulse_spoke-100641.tgz")
+    upload.add_argument("file", help="file name in <data dir>/packages, e.g. my_app-1.2.0.tgz")
     upload.add_argument("--why", default="")
     commands.add_parser("end", help="close the session").add_argument("summary", nargs="?", default="")
     args = parser.parse_args(argv)

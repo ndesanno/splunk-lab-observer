@@ -124,15 +124,15 @@ class LanAccessTest(unittest.TestCase):
 
     def test_lan_listener_requires_https_and_login(self):
         with self.assertRaises(ValueError):
-            create_server(("192.168.3.86", 0), f"http://127.0.0.1:{self.splunk.server_port}")
+            create_server(("192.168.1.50", 0), f"http://127.0.0.1:{self.splunk.server_port}")
         self.assertEqual(os.stat(self.credentials["keyfile"]).st_mode & 0o077, 0)
         self.assertEqual(os.stat(self.credentials["auth_file"]).st_mode & 0o077, 0)
         self.assertEqual(os.stat(self.credentials["password_file"]).st_mode & 0o077, 0)
 
     def test_service_unit_runs_this_checkout_with_the_chosen_address(self):
         from observer.service import unit_text
-        text = unit_text(Path("/opt/venv/bin/python"), Path("/srv/observer"), ["--port", "8766", "--lan-address", "192.168.3.86"])
-        self.assertIn("ExecStart=/opt/venv/bin/python -m observer.server --port 8766 --lan-address 192.168.3.86\n", text)
+        text = unit_text(Path("/opt/venv/bin/python"), Path("/srv/observer"), ["--port", "8766", "--lan-address", "192.168.1.50"])
+        self.assertIn("ExecStart=/opt/venv/bin/python -m observer.server --port 8766 --lan-address 192.168.1.50\n", text)
         self.assertIn("WorkingDirectory=/srv/observer\n", text)
         self.assertIn("Restart=on-failure", text)
 

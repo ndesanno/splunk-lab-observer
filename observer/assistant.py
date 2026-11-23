@@ -57,7 +57,7 @@ SECRET_KEYS = re.compile(r"(?i)pass(word)?|secret|token|pass4symmkey|sslpassword
 SECRET_TEXT = re.compile(r"(?i)(pass(word|wd)?|secret|token|api[_-]?key|pass4symmkey)(\"?\s*[:=]\s*)\S+")
 
 SYSTEM = """You are the lab assistant inside Splunk Lab Observer, a web interface the lab owner uses to watch every \
-component of a Splunk lab running in rootless Podman on one mini PC. The owner sees a wall of Splunk Web screens and \
+component of a Splunk lab running in rootless Podman on one host. The owner sees a wall of Splunk Web screens and \
 consoles next to this conversation.
 
 How to work:
@@ -572,7 +572,7 @@ class Assistant:
             messages, each with its observation id and time) and recent state changes for one component.
 
             Args:
-                component: Component id from lab_overview, e.g. p-hq-sh1.
+                component: Component id from lab_overview, e.g. splunk-sh1.
             """
             def work():
                 found = self._component(component)
@@ -874,8 +874,8 @@ class Assistant:
 
             Args:
                 goal: What the walkthrough shows or tests, in one sentence.
-                steps: Short, ordered steps, e.g. ["Open Hindsight Vulnerability Overview", "Filter to critical hosts"].
-                apps: App ids under test, e.g. ["TA-hindsight"]; the owner sees their installed and source versions.
+                steps: Short, ordered steps, e.g. ["Open the app overview", "Filter to critical hosts"].
+                apps: App ids under test, e.g. ["my_app"]; the owner sees their installed and source versions.
             """
             arguments = {"goal": goal, "steps": steps, "apps": apps or []}
 
@@ -974,7 +974,7 @@ class Assistant:
             tested. Call it before testing an app. Configured apps: see the error message if the id is unknown.
 
             Args:
-                app: App id, e.g. TA-hindsight, federation_pulse_hq, federation_pulse_spoke.
+                app: App id, e.g. my_app or TA-my_addon.
             """
             def work():
                 source = self._coverage_source(app)
@@ -998,7 +998,7 @@ class Assistant:
 
             Args:
                 app: App id.
-                item: Item id from coverage_map, e.g. screen:hindsight_overview.
+                item: Item id from coverage_map, e.g. screen:my_app_overview.
                 case: normal, empty (no data), incorrect (bad input), permission (a role without access), error
                     (a failing dependency), or recovery (back to normal after an error).
                 result: pass, fail, unverified or n/a.

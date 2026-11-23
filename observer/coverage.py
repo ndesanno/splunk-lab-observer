@@ -8,9 +8,8 @@ case to the run and steps that support them; "tested" needs a pass or fail verdi
 
 Sources are listed in coverage-sources.json in the observer's config directory:
 
-    [{"app": "TA-hindsight", "repo": "~/projects/hindsight", "path": "TA-hindsight"},
-     {"app": "federation_pulse_hq", "repo": "~/projects/splunk-federation-pulse",
-      "path": "apps/pulse-hq/federation_pulse_hq", "ui": {"ui/src/hq": "pulse_hq_overview"}}]
+    [{"app": "TA-my_addon", "repo": "~/src/my-addon", "path": "TA-my_addon"},
+     {"app": "my_app", "repo": "~/src/my-app", "path": "apps/my_app", "ui": {"ui/src/pages": "my_app_overview"}}]
 
 "ui" maps a React source folder to the view it renders into, for pages drawn by JavaScript.
 """

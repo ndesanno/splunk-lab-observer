@@ -8,14 +8,14 @@ The owner must be able to verify an AI claim against a visible component view, s
 
 ## First milestone
 
-- Support Hindsight, Federation Pulse HQ, and Federation Pulse Spoke. Inventory their features and screens, and show which behaviors have been verified.
+- Support the Splunk apps the owner develops and tests in the lab. Inventory their features and screens, and show which behaviors have been verified.
 - Serve the interface on one explicit HTTPS port on the mini PC's private LAN address, with an owner login before any lab view or API is available. Keep credentials and TLS keys outside the repository; retain loopback-only mode for local development.
 - Show a lab overview with discovered components, topology, health, recent changes and errors, active jobs, resource use, freshness, and history.
 - Provide a selectable wall of component views. Web components show their real interface; headless components show a live console and telemetry view. The owner can select and rearrange views, save a layout, expand one view, and navigate known app screens and workflows.
 - Keep selected views live. Other views may use visibly timestamped previews when necessary to keep the interface responsive. A synchronized timeline shows saved views and observations from a chosen moment.
 - Offer two AI modes: a guided walkthrough that pauses for the owner, and an agreed test workflow that can proceed while the owner watches. The owner can pause, stop, or take over at any time. AI clicks and inputs appear in the same view, with a timestamped action trail.
 - Test both UI behavior and displayed information. Use app rules and independent Splunk searches or APIs as expected results. Mark a check unverified when evidence is missing. Include normal use, empty and incorrect data, permissions, error states, and recovery in the per-feature coverage record.
-- Verify Federation Pulse HQ and Spoke separately and follow a dataset from Spoke publication through HQ display. Cover standalone and search head cluster deployments actually present in the lab; label untested topologies clearly.
+- Verify apps that span several components (for example, one that publishes on one search head and is read on another) on each side separately, and follow one item from where it is produced to where it is shown. Cover standalone and search head cluster deployments actually present in the lab; label untested topologies clearly.
 - Identify the local source revision and installed app version before explaining or testing an app, and surface mismatches.
 - Save each run's steps, screenshots, relevant searches and logs, failures, verdict, lab state, and app versions. Retain runs for 30 days by default and allow pinning. AI claims link to the exact evidence and time that support them.
 

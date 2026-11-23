@@ -1,0 +1,14 @@
+[
+ {
+  "id": "search-app-versions-agree",
+  "app": "search",
+  "item": "screen:search",
+  "case": "normal",
+  "title": "Every Splunk Enterprise instance runs the same version and build of the Search app",
+  "compare": "all_equal",
+  "shown": {
+   "what": "Installed version and build of the Search app on each component",
+   "installed": "search"
+  }
+ }
+]
