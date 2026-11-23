@@ -141,7 +141,7 @@ class ComponentViewTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             create_server(("0.0.0.0", 0), f"http://127.0.0.1:{self.router.server_port}")
         with self.assertRaises(ValueError):
-            create_server(("127.0.0.1", 0), "http://192.168.3.86:8190")
+            create_server(("127.0.0.1", 0), "http://192.168.1.50:8190")
 
 
 if __name__ == "__main__":

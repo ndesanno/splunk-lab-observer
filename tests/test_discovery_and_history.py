@@ -66,7 +66,7 @@ class DiscoveryTest(unittest.TestCase):
             self.assertTrue(item["source"] and item["checked_at"])
 
     def test_owner_labels_stay_separate_from_discovered_facts(self):
-        self.lab.set_label("p-sh1", "HQ search head 1", "Where Pulse HQ runs")
+        self.lab.set_label("p-sh1", "HQ search head 1", "Where Sample HQ runs")
         component = self.lab.component("p-sh1")
         self.assertEqual(component["owner_name"], "HQ search head 1")
         self.assertEqual(component["id"], "p-sh1")
@@ -110,10 +110,10 @@ class ScreenInventoryTest(unittest.TestCase):
         self.assertEqual(status, 200)
         screens = [(item["app"], item["group"], item["label"], item["path"]) for item in result["screens"]]
         self.assertEqual(screens[:4], [
-            ("TA-hindsight", None, "Vulnerability Overview", "/en-US/app/TA-hindsight/hindsight_overview"),
-            ("TA-hindsight", "Review", "Apps and Add-ons", "/en-US/app/TA-hindsight/hindsight_apps"),
-            ("TA-hindsight", "Review", "Index settings", "/en-US/manager/search/data/indexes"),
-            ("federation_pulse_hq", None, "Federation Pulse", "/en-US/app/federation_pulse_hq/"),
+            ("TA-example", None, "Example Overview", "/en-US/app/TA-example/example_overview"),
+            ("TA-example", "Review", "Apps and Add-ons", "/en-US/app/TA-example/example_apps"),
+            ("TA-example", "Review", "Index settings", "/en-US/manager/search/data/indexes"),
+            ("sample_hq", None, "Sample HQ", "/en-US/app/sample_hq/"),
         ])
         self.assertFalse(any(item["app"] == "hidden_ta" or "example.test" in item["path"] for item in result["screens"]))
         self.assertTrue(result["source"] and result["checked_at"])
@@ -122,7 +122,7 @@ class ScreenInventoryTest(unittest.TestCase):
         cm_labels = {item["label"] for item in self.lab.component("p-cm")["screens"] if item["app"] == "settings"}
         self.assertIn("Indexer clustering", cm_labels)
         versions = {app["app"]: app["version"] for app in self.lab.component("p-sh1")["facts"]["installed_apps"]["value"]}
-        self.assertEqual(versions["federation_pulse_hq"], "0.10.6")
+        self.assertEqual(versions["sample_hq"], "0.10.6")
 
     def test_lab_summary_leaves_screen_lists_to_the_focused_view(self):
         _status, lab = call(self.observer.server_port, "GET", "/observer/api/lab")

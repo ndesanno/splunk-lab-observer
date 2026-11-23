@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Specs and tickets for this project live in GitHub Issues in `ndesanno/splunk-lab-observer`. This repository is private. Use `gh` from this checkout, and verify the target with `gh repo view --json nameWithOwner` before the first issue write in a session.
+Specs and tickets for this project live in GitHub Issues in `ndesanno/splunk-lab-observer`. This repository is public: keep lab addresses, credentials, raw lab events, private app details and sensitive screenshots out of issues and pull requests. Use `gh` from this checkout, and verify the target with `gh repo view --json nameWithOwner` before the first issue write in a session.
 
 ## Operations
 

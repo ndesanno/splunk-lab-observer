@@ -1,6 +1,6 @@
 """Run the observer as a systemd user service, so it comes back after a restart of the workstation.
 
-    python -m observer.service install --lan-address 192.168.3.86 --port 8766
+    python -m observer.service install --lan-address 192.168.1.50 --port 8766
     python -m observer.service remove
 
 install writes ~/.config/systemd/user/splunk-lab-observer.service for this checkout and this Python,

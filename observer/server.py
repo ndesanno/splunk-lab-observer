@@ -222,7 +222,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "unknown_component"})
                 return
             if operator is None:
-                self._json(409, {"error": "No test account: run the lab's ./observer.sh operator first"})
+                self._json(409, {"error": "No test account: run lab-setup/observer-lab.sh operator first"})
                 return
             try:
                 cookies = operator.web_session(parts[2])
@@ -756,7 +756,7 @@ def main():
     parser.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--splunk-config", type=Path, default=DEFAULT_SPLUNK_CONFIG,
-                        help="Read-only lab_observer account and router URL (written by the lab's observer.sh)")
+                        help="Read-only lab_observer account and router URL (written by lab-setup/observer-lab.sh account)")
     parser.add_argument("--no-capture", action="store_true", help="Do not take background screen previews")
     args = parser.parse_args()
 

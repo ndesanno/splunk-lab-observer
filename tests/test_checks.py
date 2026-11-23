@@ -11,13 +11,13 @@ from tests.fakes import start, start_router
 from tests.test_coverage import CoverageFixture
 from tests.test_discovery_and_history import call
 
-SHOWN = {"what": "what the app shows", "search": {"component": "p-sh1", "app": "TA-hindsight", "query": "| savedsearch \"Shown count\""}, "field": "count"}
+SHOWN = {"what": "what the app shows", "search": {"component": "p-sh1", "app": "TA-example", "query": "| savedsearch \"Shown count\""}, "field": "count"}
 EXPECTED = {"what": "Splunk's own list", "search": {"component": "p-sh1", "query": "| rest /services/data/indexes | stats count as value"}, "field": "value"}
 
 
 def check(**changes):
-    return {"id": "shown-count", "title": "The app counts what Splunk lists", "ticket": 15, "app": "TA-hindsight",
-            "item": "screen:hindsight_overview", "case": "normal", "shown": SHOWN, "expected": EXPECTED} | changes
+    return {"id": "shown-count", "title": "The app counts what Splunk lists", "ticket": 15, "app": "TA-example",
+            "item": "screen:example_overview", "case": "normal", "shown": SHOWN, "expected": EXPECTED} | changes
 
 
 class ChecksFixture(CoverageFixture):
@@ -48,9 +48,9 @@ class CheckRoundTest(ChecksFixture):
         readings = [item for item in run["events"] if item["type"] == "tool"]
         self.assertEqual([item["seq"] for item in readings], result["evidence_steps"])
         self.assertIn("savedsearch", readings[0]["input"]["search"])
-        mark = self.coverage.marks("TA-hindsight")[0]
+        mark = self.coverage.marks("TA-example")[0]
         self.assertEqual((mark["item"], mark["case"], mark["status"], mark["verdict"], mark["by"], mark["run_id"]),
-                         ("screen:hindsight_overview", "normal", "tested", "pass", "scheduled check", run["id"]))
+                         ("screen:example_overview", "normal", "tested", "pass", "scheduled check", run["id"]))
         self.assertEqual(mark["evidence"], result["evidence_steps"])
         self.assertEqual(self.checks.summary()["checks"][-1]["last"]["result"], "pass")
 
@@ -61,7 +61,7 @@ class CheckRoundTest(ChecksFixture):
         self.assertEqual(results["shown-count"]["result"], "fail")
         self.assertIn("shown 12; expected 13", results["shown-count"]["detail"])
         self.assertEqual(run["verdict"]["verdict"], "fail")
-        self.assertEqual(self.coverage.marks("TA-hindsight")[0]["verdict"], "fail")
+        self.assertEqual(self.coverage.marks("TA-example")[0]["verdict"], "fail")
 
     def test_a_result_remembers_when_it_changed_and_what_it_was(self):
         self.define(check())
@@ -84,7 +84,7 @@ class CheckRoundTest(ChecksFixture):
         self.assertEqual(results["shown-count"]["result"], "unverified")
         self.assertIn("insufficient permission", results["shown-count"]["detail"])
         self.assertEqual(run["verdict"]["verdict"], "inconclusive")
-        mark = self.coverage.marks("TA-hindsight")[0]
+        mark = self.coverage.marks("TA-example")[0]
         self.assertEqual((mark["status"], mark["verdict"]), ("unverified", None))
 
     def test_an_empty_answer_is_unverified(self):
@@ -129,11 +129,11 @@ class CheckRoundTest(ChecksFixture):
         self.source.answers[("p-sh1", "makeresults other")] = [{"value": "99"}]
         self.define(check(id="aa-fails", expected=failing), check(id="zz-passes"))
         self.round(["aa-fails", "zz-passes"])
-        mark = self.coverage.marks("TA-hindsight")[0]
-        self.assertEqual((mark["verdict"], len(self.coverage.marks("TA-hindsight"))), ("fail", 1))
+        mark = self.coverage.marks("TA-example")[0]
+        self.assertEqual((mark["verdict"], len(self.coverage.marks("TA-example"))), ("fail", 1))
         self.assertIn("aa-fails", mark["note"])
         self.round(["zz-passes"])  # running only the passing one later still leaves the case failed
-        self.assertEqual(self.coverage.marks("TA-hindsight")[0]["verdict"], "fail")
+        self.assertEqual(self.coverage.marks("TA-example")[0]["verdict"], "fail")
 
     def test_a_check_that_would_write_is_refused_when_it_is_loaded(self):
         writing = dict(SHOWN, search=dict(SHOWN["search"], query="| makeresults | outputlookup x.csv"))
@@ -151,13 +151,21 @@ class CheckRoundTest(ChecksFixture):
         (self.config / "checks.json").unlink(missing_ok=True)
         checks, problems = load_definitions(self.config)
         self.assertEqual(problems, [])
-        self.assertGreaterEqual(len(checks), 19)
+        self.assertGreaterEqual(len(checks), 1)
+
+    def test_checks_in_the_config_checks_folder_load_with_the_others(self):
+        (self.config / "checks").mkdir(exist_ok=True)
+        (self.config / "checks" / "mine.json").write_text(json.dumps([check(id="folder-check")]), encoding="utf-8")
+        checks, problems = load_definitions(self.config)
+        self.assertEqual(problems, [])
+        self.assertIn("folder-check", [item["id"] for item in checks])
+        self.assertEqual(next(item for item in checks if item["id"] == "folder-check")["file"], "mine.json")
 
     def test_an_item_the_installed_version_does_not_have_gets_no_mark(self):
-        self.define(check(item="screen:hindsight_trends"))
+        self.define(check(item="screen:example_trends"))
         run, results = self.round(["shown-count"])
         self.assertEqual(results["shown-count"]["result"], "pass")
-        self.assertEqual(self.coverage.marks("TA-hindsight"), [])
+        self.assertEqual(self.coverage.marks("TA-example"), [])
         self.assertTrue(any("No coverage mark" in item.get("text", "") for item in run["events"]))
 
 
@@ -196,13 +204,3 @@ class ChecksApiTest(ChecksFixture):
         self.assertEqual(mine["last"]["result"], "pass")
         self.assertTrue(mine["last"]["run_id"])
 
-
-class FixtureGuardTest(ChecksFixture):
-    def test_the_fixture_run_does_nothing_until_the_owner_has_approved_it(self):
-        import subprocess
-        import sys
-        result = subprocess.run([sys.executable, "-m", "observer.fixture_hindsight", "--config-dir", str(self.config), "--data-dir", str(self.config)],
-                                capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("--approved-by-owner", result.stderr)
-        self.assertFalse((self.config / "observer.db").exists())

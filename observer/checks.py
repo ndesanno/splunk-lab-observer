@@ -1,15 +1,15 @@
 """Checks: a displayed or reported value compared with an independent source, without an AI model.
 
-A check is data (a JSON file under observer/checks/, or checks.json in the config directory). It
-names what an app shows, an independent way to get the same fact, and how to compare them. A
-round runs every check with the read-only lab_observer account, keeps each reading as a step of
+A check is data (a JSON file under observer/checks/, or checks.json or checks/*.json in the config
+directory). It names what an app shows, an independent way to get the same fact, and how to compare
+them. A round runs every check with the read-only lab_observer account, keeps each reading as a step of
 one run, and marks the coverage case each check stands for. A reading that cannot be taken makes
 the check unverified, never passed.
 
-    {"id": "spoke-bravo-dataset-count", "title": "...", "ticket": 15,
-     "app": "federation_pulse_spoke", "item": "section:pulse_spoke_status:Dataset inventory", "case": "normal",
-     "shown":    {"what": "...", "search": {"component": "p-bravo", "app": "federation_pulse_spoke", "query": "..."}, "field": "dataset_count"},
-     "expected": {"what": "...", "search": {"component": "p-bravo", "query": "..."}, "field": "value"},
+    {"id": "my-app-index-count", "title": "...", "ticket": 15,
+     "app": "my_app", "item": "section:my_app_status:Index inventory", "case": "normal",
+     "shown":    {"what": "...", "search": {"component": "splunk-sh1", "app": "my_app", "query": "..."}, "field": "index_count"},
+     "expected": {"what": "...", "search": {"component": "splunk-sh1", "query": "..."}, "field": "value"},
      "compare": "equal"}
 
 A reading is one of:
@@ -52,6 +52,8 @@ def load_definitions(config_dir=None):
     files = sorted(PACKAGED.glob("*.json"))
     if config_dir and (Path(config_dir) / "checks.json").exists():
         files.append(Path(config_dir) / "checks.json")
+    if config_dir:
+        files.extend(sorted((Path(config_dir) / "checks").glob("*.json")))
     checks, problems, seen = [], [], set()
     for path in files:
         try:

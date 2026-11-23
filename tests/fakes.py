@@ -63,13 +63,13 @@ class FakeSource:
     def read_command(self, component, argv, user=None):
         if argv[:3] == ["/opt/splunk/bin/splunk", "cmd", "python3"]:
             return json.dumps([
-                {"app": "TA-hindsight", "label": "Hindsight", "visible": True, "disabled": False, "version": "0.8.1", "build": "1",
-                 "nav": '<nav><view name="hindsight_overview" default="true"/><collection label="Review"><view name="hindsight_apps"/>'
+                {"app": "TA-example", "label": "Example", "visible": True, "disabled": False, "version": "0.8.1", "build": "1",
+                 "nav": '<nav><view name="example_overview" default="true"/><collection label="Review"><view name="example_apps"/>'
                         '<a href="/manager/search/data/indexes">Index settings</a></collection><a href="https://example.test">Docs</a></nav>',
-                 "views": {"hindsight_overview": "Vulnerability Overview", "hindsight_apps": "Apps and Add-ons"}},
+                 "views": {"example_overview": "Example Overview", "example_apps": "Apps and Add-ons"}},
                 {"app": "hidden_ta", "label": "Hidden", "visible": False, "disabled": False, "version": "1.0", "build": None, "nav": None, "views": {}},
-                {"app": "federation_pulse_hq", "label": "Federation Pulse", "visible": True, "disabled": False, "version": "0.10.6",
-                 "build": "100642", "nav": None, "views": {"pulse_hq_overview": "Federation Overview"}},
+                {"app": "sample_hq", "label": "Sample HQ", "visible": True, "disabled": False, "version": "0.10.6",
+                 "build": "100642", "nav": None, "views": {"sample_hq_overview": "Federation Overview"}},
             ])
         if component == "p-lb":
             return "backend shc\n    server sh1 p-sh1:8089 check\n    server sh2 p-sh2:8089 check\n"
